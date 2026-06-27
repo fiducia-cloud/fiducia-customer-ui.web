@@ -21,6 +21,8 @@ type FiduciaRegion =
 
 type CustomerConfig = {
   apiBase: string;
+  backendEventsPath: string;
+  backendWsPath: string;
   customerHost: string;
   regions: FiduciaRegion[];
   supabaseUrl?: string;
@@ -64,6 +66,17 @@ type LeadershipEvent = {
 
 type PortalEvent = LockEvent | RequestEvent | KvEvent | ServiceEvent | LeadershipEvent;
 
+type StreamFragments = Partial<Record<"summary" | "locks" | "requests" | "kv" | "services", string>>;
+
+type BackendStreamMessage = {
+  kind: "connected" | "refresh" | "pong";
+  sequence: number;
+  transport: "websocket" | "sse";
+  event: "fiducia:refresh";
+  at_ms: number;
+  fragments?: StreamFragments;
+};
+
 declare global {
   interface Window {
     FIDUCIA_CUSTOMER_CONFIG?: CustomerConfig;
@@ -75,6 +88,8 @@ window.htmx = htmx;
 
 const defaultConfig: CustomerConfig = {
   apiBase: "",
+  backendEventsPath: "/app/events",
+  backendWsPath: "/app/ws",
   customerHost: "app.fiducia.cloud",
   regions: ["auto", "iad1", "sfo1", "ams1", "fra1", "sin1", "syd1"]
 };
@@ -85,11 +100,23 @@ const config = {
 };
 
 const statusEl = document.querySelector<HTMLElement>("[data-supabase-status]");
+const backendStatusEl = document.querySelector<HTMLElement>("[data-backend-stream-status]");
 const eventsEl = document.querySelector<HTMLElement>("#realtime-events");
 const freshnessEls = document.querySelectorAll<HTMLElement>("[data-freshness-clock]");
+const streamTargets: Record<keyof StreamFragments, string> = {
+  summary: "#summary",
+  locks: "#locks-panel",
+  requests: "#requests-panel",
+  kv: "#kv-panel",
+  services: "#services-panel"
+};
 
+let backendStreamReady = false;
+
+setBackendStatus("connecting");
 setRealtimeStatus(hasSupabaseConfig(config) ? "connecting" : "offline");
 startFreshnessClock();
+startBackendStream(config);
 startRealtime(config);
 
 document.body.addEventListener("htmx:afterSwap", (event) => {
@@ -139,13 +166,128 @@ function startRealtime(value: CustomerConfig) {
 
 function pushRealtimeEvent(topic: string, verb: string, value: unknown) {
   setRealtimeStatus("live");
-  htmx.trigger(document.body, "fiducia:refresh");
+  if (!backendStreamReady) {
+    htmx.trigger(document.body, "fiducia:refresh");
+  }
   appendEvent({
     topic,
     verb,
     at: new Date().toISOString(),
     value: coercePortalEvent(value)
   });
+}
+
+function startBackendStream(value: CustomerConfig) {
+  if ("WebSocket" in window) {
+    startBackendWebSocket(value);
+    return;
+  }
+
+  startBackendEventSource(value);
+}
+
+function startBackendWebSocket(value: CustomerConfig) {
+  const socket = new WebSocket(resolveWebSocketUrl(value.backendWsPath));
+
+  socket.addEventListener("open", () => {
+    backendStreamReady = true;
+    setBackendStatus("websocket");
+  });
+
+  socket.addEventListener("message", (event) => {
+    handleBackendStreamMessage(event.data, "websocket");
+  });
+
+  socket.addEventListener("close", () => {
+    backendStreamReady = false;
+    setBackendStatus("reconnecting");
+    window.setTimeout(() => startBackendEventSource(value), 1200);
+  });
+
+  socket.addEventListener("error", () => {
+    backendStreamReady = false;
+    setBackendStatus("error");
+    socket.close();
+  });
+}
+
+function startBackendEventSource(value: CustomerConfig) {
+  if (!("EventSource" in window)) {
+    setBackendStatus("offline");
+    return;
+  }
+
+  const source = new EventSource(resolveHttpUrl(value.backendEventsPath));
+
+  source.addEventListener("open", () => {
+    backendStreamReady = true;
+    setBackendStatus("sse");
+  });
+
+  source.addEventListener("fiducia-refresh", (event) => {
+    handleBackendStreamMessage((event as MessageEvent).data, "sse");
+  });
+
+  source.addEventListener("error", () => {
+    backendStreamReady = false;
+    setBackendStatus("reconnecting");
+  });
+}
+
+function handleBackendStreamMessage(data: unknown, transport: BackendStreamMessage["transport"]) {
+  const parsed = parseBackendMessage(data);
+  if (!parsed) {
+    return;
+  }
+
+  backendStreamReady = true;
+  setBackendStatus(transport === "websocket" ? "websocket" : "sse");
+  applyStreamFragments(parsed.fragments);
+  appendEvent({
+    topic: "Backend Stream",
+    verb: parsed.kind,
+    at: new Date(parsed.at_ms).toISOString(),
+    value: {
+      sequence: parsed.sequence,
+      transport: parsed.transport,
+      fragments: Object.keys(parsed.fragments ?? {})
+    }
+  });
+}
+
+function parseBackendMessage(data: unknown): BackendStreamMessage | null {
+  if (typeof data !== "string") {
+    return null;
+  }
+
+  try {
+    const value = JSON.parse(data) as BackendStreamMessage;
+    if (isRecord(value) && value.event === "fiducia:refresh" && typeof value.sequence === "number") {
+      return value;
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+}
+
+function applyStreamFragments(fragments: StreamFragments | undefined) {
+  if (!fragments) {
+    return;
+  }
+
+  for (const [name, selector] of Object.entries(streamTargets)) {
+    const html = fragments[name as keyof StreamFragments];
+    const target = document.querySelector<HTMLElement>(selector);
+    if (!html || !target) {
+      continue;
+    }
+
+    target.innerHTML = html;
+    target.dataset.lastSwapAt = new Date().toISOString();
+    htmx.process(target);
+  }
 }
 
 function appendEvent(event: { topic: string; verb: string; at: string; value: unknown }) {
@@ -212,6 +354,15 @@ function setRealtimeStatus(status: string) {
   statusEl.dataset.status = status;
 }
 
+function setBackendStatus(status: string) {
+  if (!backendStatusEl) {
+    return;
+  }
+
+  backendStatusEl.textContent = status;
+  backendStatusEl.dataset.status = status;
+}
+
 function startFreshnessClock() {
   if (freshnessEls.length === 0) {
     return;
@@ -241,4 +392,14 @@ function formatClock(iso: string) {
     minute: "2-digit",
     second: "2-digit"
   }).format(new Date(iso));
+}
+
+function resolveHttpUrl(path: string) {
+  return new URL(path, window.location.origin).toString();
+}
+
+function resolveWebSocketUrl(path: string) {
+  const url = new URL(path, window.location.origin);
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
 }

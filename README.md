@@ -32,7 +32,8 @@ The dependency is local in `package.json`:
 ## Realtime
 
 If these variables are provided to `fiducia-backend.rs`, the rendered portal
-passes them to the browser and subscribes through Supabase realtime:
+passes them to the browser and subscribes through Supabase realtime. That is the
+browser's single Supabase WebSocket:
 
 - `SUPABASE_URL`
 - `SUPABASE_ANON_KEY`
@@ -43,3 +44,13 @@ The current client listens for changes on:
 - `public.fiducia_requests`
 - `public.fiducia_kv`
 - `public.fiducia_services`
+
+The browser also opens one stream to `fiducia-backend.rs`:
+
+- WebSocket: `/app/ws`
+- SSE fallback: `/app/events`
+
+The backend stream sends rendered HTML fragments for the dashboard panels, so
+normal updates do not need a fresh HTMX HTTP request for each fragment. The
+manual refresh button and `fiducia:refresh` HTMX event remain available as
+fallback paths.

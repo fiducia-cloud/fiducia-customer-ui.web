@@ -105,17 +105,21 @@ select {
 }
 
 .status-pill[data-status="live"]::before,
+.status-pill[data-status="sse"]::before,
+.status-pill[data-status="websocket"]::before,
 .status-pill[data-status="subscribed"]::before {
   background: #2aa198;
 }
 
 .status-pill[data-status="connecting"]::before,
+.status-pill[data-status="reconnecting"]::before,
 .status-pill[data-status="joining"]::before {
   background: #f4c95d;
 }
 
 .status-pill[data-status="offline"]::before,
 .status-pill[data-status="closed"]::before,
+.status-pill[data-status="error"]::before,
 .status-pill[data-status="channel_error"]::before {
   background: #d95f5f;
 }

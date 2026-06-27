@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fiducia Customer Portal</title>
+    <script>
+      window.FIDUCIA_CUSTOMER_CONFIG = {
+        apiBase: "",
+        supabaseUrl: "",
+        supabaseAnonKey: ""
+      };
+    </script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <main class="workspace">
+        <section class="workspace__main" aria-labelledby="dev-title">
+          <h1 id="dev-title">Customer Portal</h1>
+          <div id="realtime-events" class="event-stream" aria-live="polite"></div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

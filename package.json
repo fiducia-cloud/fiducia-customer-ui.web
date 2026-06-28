@@ -7,7 +7,10 @@
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
     "check": "tsc --noEmit",
-    "preview": "vite preview --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1",
+    "test:browser": "npm run build && node --test --test-concurrency=1 tests/*.test.mjs",
+    "test:browser:playwright": "npm run build && node --test tests/customer-playwright.test.mjs",
+    "test:browser:puppeteer": "npm run build && node --test tests/customer-puppeteer.test.mjs"
   },
   "dependencies": {
     "@fiducia/interfaces": "file:../fiducia-interfaces",
@@ -17,6 +20,8 @@
   },
   "devDependencies": {
     "@types/node": "^24.10.2",
+    "playwright": "^1.61.1",
+    "puppeteer": "^25.2.1",
     "typescript": "^5.9.3"
   }
 }

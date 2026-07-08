@@ -2,7 +2,6 @@ import "./styles.css";
 import htmx from "htmx.org";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
 import {
-  backendSend,
   connectBackend,
   loadBrowserCore,
   makeQueue,

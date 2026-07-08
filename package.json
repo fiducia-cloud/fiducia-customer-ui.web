@@ -25,7 +25,6 @@
     "playwright": "^1.61.1",
     "puppeteer": "^25.2.1",
     "typescript": "^5.9.3",
-    "vite-plugin-top-level-await": "^1.6.0",
     "vite-plugin-wasm": "^3.6.0"
   }
 }

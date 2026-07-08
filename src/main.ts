@@ -207,6 +207,11 @@ const streamTargets: Record<keyof StreamFragments, string> = {
 let backendStreamReady = false;
 let pendingMfaFactorId: string | null = null;
 
+// The local-first api_keys sync handle. Null until (and unless) the wasm reconcile
+// core + IndexedDB store come up; when null the view falls back to the fetch path.
+type ApiKeySyncHandle = { store: SyncStore; client: SyncClient };
+let apiKeySync: ApiKeySyncHandle | null = null;
+
 setBackendStatus("connecting");
 setRealtimeStatus(supabaseClient ? "connecting" : "offline");
 initializeAuth(supabaseClient);

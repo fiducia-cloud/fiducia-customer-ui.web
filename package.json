@@ -19,6 +19,7 @@
     "vite": "^7.2.7"
   },
   "devDependencies": {
+    "@fiducia/test-config": "file:../fiducia-test-config",
     "@types/node": "^24.10.2",
     "playwright": "^1.61.1",
     "puppeteer": "^25.2.1",

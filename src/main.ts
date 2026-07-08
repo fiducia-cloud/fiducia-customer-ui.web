@@ -726,18 +726,25 @@ async function createApiKey(form: HTMLFormElement) {
     }
 
     const key = created.api_key;
-    // Local-first: when the row is synced (has an id), route it through the client's
-    // optimisticWrite — instant IndexedDB write + durable queue + backend sync POST —
-    // then re-render from the store. Falls back to a direct DOM append (mock path).
+    // Creation is server-led: the create endpoint already minted the row (version 1),
+    // persisted it, and broadcast a `fiducia:sync` frame. So creation must NOT go
+    // through optimisticWrite — that would upsert + broadcast a *second* time (the
+    // create double-write). Instead, when the row is synced (has an id), write the
+    // returned row straight into the local store as clean: the server-assigned
+    // version, not dirty, and with no durable-queue entry. Then re-render from the
+    // store. optimisticWrite stays reserved for future EDITS (rename, scope changes),
+    // where the client leads the write. Falls back to a direct DOM append on the mock
+    // path (no id / no sync stack).
     let rendered = false;
     if (apiKeySync && key.id) {
       try {
-        await apiKeySync.client.optimisticWrite("api_keys", key.id, key, (write) =>
-          backendSend(location.origin, write)
-        );
+        await apiKeySync.store.put("api_keys", key.id, key, {
+          version: key.version ?? 0,
+          dirty: false
+        });
         rendered = await renderApiKeysFromStore();
       } catch (error) {
-        console.debug("optimistic api_key write failed:", errorMessage(error));
+        console.debug("clean api_key store write failed:", errorMessage(error));
       }
     }
     if (!rendered) {

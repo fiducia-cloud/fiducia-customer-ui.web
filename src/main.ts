@@ -568,7 +568,11 @@ async function verifyTotp(client: SupabaseClient) {
 }
 
 function bindApiKeyControls() {
-  void hydrateApiKeys();
+  // Bring up the local-first sync stack (best-effort) before the first hydrate so
+  // the table can render from IndexedDB when the DB-backed path is live. Only when
+  // the api-keys table is actually on the page.
+  const ready = apiKeyTableBody() ? setupApiKeySync() : Promise.resolve();
+  void ready.then(() => hydrateApiKeys());
 
   const form = document.querySelector<HTMLFormElement>("[data-api-key-form]");
   form?.addEventListener("submit", (event) => {

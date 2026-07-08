@@ -46,6 +46,9 @@ type CustomerApiKey = {
   scopes: string;
   last_used: string;
   status: string;
+  // Present only on DB-backed (synced) rows; absent on the mock path.
+  id?: string;
+  version?: number;
 };
 
 type ApiKeyListResponse = {

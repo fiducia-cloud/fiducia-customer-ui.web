@@ -1,13 +1,14 @@
 import { defineConfig } from "vite";
-import topLevelAwait from "vite-plugin-top-level-await";
 import wasm from "vite-plugin-wasm";
 
 export default defineConfig({
   // The @fiducia/sync reconcile core ships as a wasm-pack `--target bundler`
-  // module (ESM `.wasm` import + top-level await for instantiation), which Vite
-  // needs these two plugins to bundle.
-  plugins: [wasm(), topLevelAwait()],
+  // module (ESM `.wasm` import + top-level await for instantiation). vite-plugin-wasm
+  // bundles the `.wasm`; the es2022 target lets Vite emit the top-level await
+  // natively (no TLA transform needed — modern Chrome supports it).
+  plugins: [wasm()],
   build: {
+    target: "es2022",
     emptyOutDir: true,
     manifest: true,
     rollupOptions: {

@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@fiducia/interfaces": "file:../fiducia-interfaces",
+    "@fiducia/sync": "file:../fiducia-sync/sdk",
     "@supabase/supabase-js": "^2.89.0",
     "htmx.org": "^2.0.8",
     "vite": "^7.2.7"

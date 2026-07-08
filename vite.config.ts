@@ -7,6 +7,10 @@ export default defineConfig({
   // bundles the `.wasm`; the es2022 target lets Vite emit the top-level await
   // natively (no TLA transform needed — modern Chrome supports it).
   plugins: [wasm()],
+  // The backend mounts these built assets under /_customer (nest_service), so
+  // emitted asset URLs — notably the wasm the sync core fetch()es by absolute
+  // path — must carry that prefix to resolve at runtime.
+  base: "/_customer/",
   build: {
     target: "es2022",
     emptyOutDir: true,

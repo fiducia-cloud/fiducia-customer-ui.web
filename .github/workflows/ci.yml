@@ -30,7 +30,7 @@ jobs:
         with:
           repository: fiducia-cloud/fiducia-sync
           path: fiducia-sync
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
       - uses: dtolnay/rust-toolchain@stable
@@ -81,7 +81,7 @@ jobs:
         with:
           repository: fiducia-cloud/fiducia-ui.web
           path: fiducia-ui.web
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: "22"
       - uses: dtolnay/rust-toolchain@stable

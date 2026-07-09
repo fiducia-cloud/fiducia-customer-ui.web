@@ -1,0 +1,102 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Typecheck + production build. Needs the sibling `file:../` deps
+  # (@fiducia/interfaces, @fiducia/test-config, @fiducia/sync) and the sync
+  # bundler-target wasm the SDK loads at build time.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fiducia-customer-ui.web
+      - uses: actions/checkout@v4
+        with:
+          repository: fiducia-cloud/fiducia-interfaces
+          path: fiducia-interfaces
+      - uses: actions/checkout@v4
+        with:
+          repository: fiducia-cloud/fiducia-test-config
+          path: fiducia-test-config
+      - uses: actions/checkout@v4
+        with:
+          repository: fiducia-cloud/fiducia-sync
+          path: fiducia-sync
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+      # The @fiducia/sync SDK loads ../pkg (the bundler-target wasm) at build time;
+      # build it from the sync crate with the rustup toolchain before Vite runs.
+      - name: build sync wasm (bundler target)
+        working-directory: fiducia-sync
+        run: wasm-pack build --target bundler --out-dir pkg -- --features wasm
+      - run: npm ci
+        working-directory: fiducia-customer-ui.web
+      - run: npm run check
+        working-directory: fiducia-customer-ui.web
+      - run: npm run build
+        working-directory: fiducia-customer-ui.web
+
+  # Full-browser E2E: builds the app, boots the real fiducia-backend.rs serving
+  # the built dist, and drives Chrome. Best-effort (needs Chrome + several sibling
+  # repos), so it never gates the build.
+  browser-e2e:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fiducia-customer-ui.web
+      - uses: actions/checkout@v4
+        with:
+          repository: fiducia-cloud/fiducia-interfaces
+          path: fiducia-interfaces
+      - uses: actions/checkout@v4
+        with:
+          repository: fiducia-cloud/fiducia-test-config
+          path: fiducia-test-config
+      - uses: actions/checkout@v4
+        with:
+          repository: fiducia-cloud/fiducia-sync
+          path: fiducia-sync
+      # The E2E harness boots ../fiducia-backend.rs (serving the customer dist) and
+      # points STATIC_DIR at ../fiducia-ui.web/dist, so both siblings must be present.
+      - uses: actions/checkout@v4
+        with:
+          repository: fiducia-cloud/fiducia-backend.rs
+          path: fiducia-backend.rs
+      - uses: actions/checkout@v4
+        with:
+          repository: fiducia-cloud/fiducia-ui.web
+          path: fiducia-ui.web
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: jetli/wasm-pack-action@v0.4.0
+      - id: chrome
+        uses: browser-actions/setup-chrome@v1
+      - name: build sync wasm (bundler target)
+        working-directory: fiducia-sync
+        run: wasm-pack build --target bundler --out-dir pkg -- --features wasm
+      - run: npm ci
+        working-directory: fiducia-customer-ui.web
+      - name: browser tests
+        working-directory: fiducia-customer-ui.web
+        env:
+          CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
+        run: npm run test:browser

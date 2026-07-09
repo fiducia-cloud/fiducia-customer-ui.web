@@ -1,6 +1,16 @@
 import "./styles.css";
 import htmx from "htmx.org";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
+import {
+  connectBackend,
+  loadBrowserCore,
+  makeQueue,
+  makeSyncClient,
+  openStore,
+  type SyncChange,
+  type SyncClient,
+  type SyncStore
+} from "@fiducia/sync";
 import type {
   ElectionGetResponse,
   KvGetResponse,
@@ -35,6 +45,9 @@ type CustomerApiKey = {
   scopes: string;
   last_used: string;
   status: string;
+  // Present only on DB-backed (synced) rows; absent on the mock path.
+  id?: string;
+  version?: number;
 };
 
 type ApiKeyListResponse = {
@@ -192,6 +205,11 @@ const streamTargets: Record<keyof StreamFragments, string> = {
 
 let backendStreamReady = false;
 let pendingMfaFactorId: string | null = null;
+
+// The local-first api_keys sync handle. Null until (and unless) the wasm reconcile
+// core + IndexedDB store come up; when null the view falls back to the fetch path.
+type ApiKeySyncHandle = { store: SyncStore; client: SyncClient };
+let apiKeySync: ApiKeySyncHandle | null = null;
 
 setBackendStatus("connecting");
 setRealtimeStatus(supabaseClient ? "connecting" : "offline");
@@ -549,7 +567,11 @@ async function verifyTotp(client: SupabaseClient) {
 }
 
 function bindApiKeyControls() {
-  void hydrateApiKeys();
+  // Bring up the local-first sync stack (best-effort) before the first hydrate so
+  // the table can render from IndexedDB when the DB-backed path is live. Only when
+  // the api-keys table is actually on the page.
+  const ready = apiKeyTableBody() ? setupApiKeySync() : Promise.resolve();
+  void ready.then(() => hydrateApiKeys());
 
   const form = document.querySelector<HTMLFormElement>("[data-api-key-form]");
   form?.addEventListener("submit", (event) => {
@@ -565,6 +587,81 @@ function bindApiKeyControls() {
   });
 }
 
+// Bring up the @fiducia/sync stack for api_keys: the wasm reconcile core, a
+// per-plane IndexedDB store, the sync client, and the backend WS/SSE subscription
+// that folds committed `fiducia:sync` changes into the store. Best-effort: any
+// failure (no wasm, no IndexedDB) leaves `apiKeySync` null and the view falls back
+// to the plain fetch path, so the portal degrades gracefully and never throws.
+async function setupApiKeySync(): Promise<void> {
+  try {
+    const core = await loadBrowserCore();
+    const store = await openStore("fiducia-customer", ["api_keys"]);
+    const queue = makeQueue(store);
+    const client = makeSyncClient({ store, queue, core });
+    apiKeySync = { store, client };
+
+    connectBackend({
+      baseUrl: location.origin,
+      onChanges: (changes) => {
+        void applyApiKeyChanges(changes);
+      }
+    });
+  } catch (error) {
+    apiKeySync = null;
+    console.debug("api_keys sync unavailable; using fetch fallback:", errorMessage(error));
+  }
+}
+
+// Fold committed changes (from the backend WS/SSE) into the local store, then
+// re-render the table from the store. Guarded so a bad frame never surfaces as a
+// page error.
+async function applyApiKeyChanges(changes: SyncChange[]) {
+  if (!apiKeySync) {
+    return;
+  }
+
+  try {
+    let touched = false;
+    for (const change of changes) {
+      if (change?.table !== "api_keys") {
+        continue;
+      }
+      await apiKeySync.client.applyChange(change);
+      touched = true;
+    }
+    if (touched) {
+      await renderApiKeysFromStore();
+    }
+  } catch (error) {
+    console.debug("applying api_keys changes failed:", errorMessage(error));
+  }
+}
+
+// Render the table straight from IndexedDB (the local-first source of truth).
+// Returns false when there is nothing stored yet, so callers can fall back.
+async function renderApiKeysFromStore(): Promise<boolean> {
+  if (!apiKeySync) {
+    return false;
+  }
+
+  const body = apiKeyTableBody();
+  if (!body) {
+    return false;
+  }
+
+  const rows = (await apiKeySync.store.all("api_keys")) as CustomerApiKey[];
+  if (!rows.length) {
+    return false;
+  }
+
+  body.textContent = "";
+  rows
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .forEach((row) => appendApiKeyRow(row, "append"));
+  return true;
+}
+
 async function hydrateApiKeys() {
   const body = apiKeyTableBody();
   if (!body) {
@@ -573,6 +670,31 @@ async function hydrateApiKeys() {
 
   try {
     const listed = await getJson<ApiKeyListResponse>("/api/customer/api-keys");
+
+    // Seed the local store from the authoritative list. DB-backed rows carry an
+    // `id` + `version`; mock rows do not, so nothing is stored on the mock path.
+    if (apiKeySync) {
+      try {
+        for (const row of listed.api_keys) {
+          if (row.id) {
+            await apiKeySync.store.put("api_keys", row.id, row, {
+              version: row.version ?? 0,
+              dirty: false
+            });
+          }
+        }
+      } catch (error) {
+        console.debug("seeding api_keys store failed:", errorMessage(error));
+      }
+
+      // Prefer the local-first store when it holds anything.
+      if (await renderApiKeysFromStore()) {
+        setApiKeyMessage(`Loaded ${listed.api_keys.length} customer API keys (local-first).`);
+        return;
+      }
+    }
+
+    // Fallback: render straight from the fetched list (mock path / empty store).
     body.textContent = "";
     listed.api_keys.forEach((row) => appendApiKeyRow(row, "append"));
     setApiKeyMessage(`Loaded ${listed.api_keys.length} customer API keys.`);
@@ -590,6 +712,8 @@ async function createApiKey(form: HTMLFormElement) {
 
   try {
     setApiKeyMessage("Creating API key...");
+    // The create endpoint mints + shows the secret once (and, DB-backed, persists
+    // the row + returns its id/version).
     const created = await postJson<CreateApiKeyResponse>("/api/customer/api-keys", {
       environment,
       name,
@@ -601,9 +725,34 @@ async function createApiKey(form: HTMLFormElement) {
       throw new Error(created.error ?? "api_key_create_failed");
     }
 
-    appendApiKeyRow(created.api_key);
+    const key = created.api_key;
+    // Creation is server-led: the create endpoint already minted the row (version 1),
+    // persisted it, and broadcast a `fiducia:sync` frame. So creation must NOT go
+    // through optimisticWrite — that would upsert + broadcast a *second* time (the
+    // create double-write). Instead, when the row is synced (has an id), write the
+    // returned row straight into the local store as clean: the server-assigned
+    // version, not dirty, and with no durable-queue entry. Then re-render from the
+    // store. optimisticWrite stays reserved for future EDITS (rename, scope changes),
+    // where the client leads the write. Falls back to a direct DOM append on the mock
+    // path (no id / no sync stack).
+    let rendered = false;
+    if (apiKeySync && key.id) {
+      try {
+        await apiKeySync.store.put("api_keys", key.id, key, {
+          version: key.version ?? 0,
+          dirty: false
+        });
+        rendered = await renderApiKeysFromStore();
+      } catch (error) {
+        console.debug("clean api_key store write failed:", errorMessage(error));
+      }
+    }
+    if (!rendered) {
+      appendApiKeyRow(key);
+    }
+
     setApiKeyMessage(
-      `${created.api_key.name} created. Secret is shown once: ${created.secret ?? "not returned"}.`
+      `${key.name} created. Secret is shown once: ${created.secret ?? "not returned"}.`
     );
     form.reset();
   } catch (error) {

@@ -14,14 +14,17 @@
   },
   "dependencies": {
     "@fiducia/interfaces": "file:../fiducia-interfaces",
+    "@fiducia/sync": "file:../fiducia-sync/sdk",
     "@supabase/supabase-js": "^2.89.0",
     "htmx.org": "^2.0.8",
     "vite": "^7.2.7"
   },
   "devDependencies": {
+    "@fiducia/test-config": "file:../fiducia-test-config",
     "@types/node": "^24.10.2",
     "playwright": "^1.61.1",
     "puppeteer": "^25.2.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vite-plugin-wasm": "^3.6.0"
   }
 }

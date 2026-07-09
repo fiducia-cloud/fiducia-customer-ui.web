@@ -15,18 +15,18 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: fiducia-customer-ui.web
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: fiducia-cloud/fiducia-interfaces
           path: fiducia-interfaces
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: fiducia-cloud/fiducia-test-config
           path: fiducia-test-config
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: fiducia-cloud/fiducia-sync
           path: fiducia-sync
@@ -56,28 +56,28 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: fiducia-customer-ui.web
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: fiducia-cloud/fiducia-interfaces
           path: fiducia-interfaces
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: fiducia-cloud/fiducia-test-config
           path: fiducia-test-config
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: fiducia-cloud/fiducia-sync
           path: fiducia-sync
       # The E2E harness boots ../fiducia-backend.rs (serving the customer dist) and
       # points STATIC_DIR at ../fiducia-ui.web/dist, so both siblings must be present.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: fiducia-cloud/fiducia-backend.rs
           path: fiducia-backend.rs
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: fiducia-cloud/fiducia-ui.web
           path: fiducia-ui.web

@@ -61,6 +61,20 @@ declare module "@fiducia/sync" {
     wsPath?: string;
     ssePath?: string;
     onChanges: (changes: SyncChange[]) => void;
+    getToken?: () => string | Promise<string | null>;
+    onStatus?: (status: string) => void;
   }): { stop(): void };
-  export function backendSend(baseUrl: string, write: unknown): Promise<SyncAck>;
+  export function backendSend(
+    baseUrl: string,
+    write: unknown,
+    opts?: { pathPrefix?: string; getToken?: () => string | Promise<string | null>; idempotencyKey?: string }
+  ): Promise<SyncAck>;
+  export function subscribeSupabase(opts: {
+    client: unknown;
+    tables: string[];
+    onChange: (change: SyncChange) => void;
+    channelName?: string;
+    filter?: string | Record<string, string>;
+    onStatus?: (status: string, err?: Error) => void;
+  }): { stop(): void };
 }

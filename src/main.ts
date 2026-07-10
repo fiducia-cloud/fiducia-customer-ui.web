@@ -7,6 +7,7 @@ import {
   makeQueue,
   makeSyncClient,
   openStore,
+  subscribeSupabase,
   type SyncChange,
   type SyncClient,
   type SyncStore
@@ -600,12 +601,28 @@ async function setupApiKeySync(): Promise<void> {
     const client = makeSyncClient({ store, queue, core });
     apiKeySync = { store, client };
 
+    // Transport 1: the backend WS/SSE (always available, carries `version`).
     connectBackend({
       baseUrl: location.origin,
       onChanges: (changes) => {
         void applyApiKeyChanges(changes);
       }
     });
+
+    // Transport 2: Supabase realtime, folded into the SAME reconcile client. Both
+    // transports converge because reconcile is idempotent (a re-seen version is
+    // ignored), so this is pure resilience — sync no longer depends on one channel.
+    // Requires the synced tables to be in the supabase_realtime publication +
+    // REPLICA IDENTITY FULL (see fiducia-interfaces sql/customer.sql).
+    if (supabaseClient) {
+      subscribeSupabase({
+        client: supabaseClient,
+        tables: ["api_keys"],
+        onChange: (change) => {
+          void applyApiKeyChanges([change]);
+        }
+      });
+    }
   } catch (error) {
     apiKeySync = null;
     console.debug("api_keys sync unavailable; using fetch fallback:", errorMessage(error));

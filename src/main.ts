@@ -7,6 +7,7 @@ import {
   makeQueue,
   makeSyncClient,
   openStore,
+  subscribeSupabase,
   type SyncChange,
   type SyncClient,
   type SyncStore

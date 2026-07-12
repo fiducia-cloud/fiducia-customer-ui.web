@@ -1,3 +1,6 @@
+// Playwright E2E (mock backend path): drives API-key create/rotate, session
+// revoke, and preferences, and asserts password/passkey/2FA controls share the
+// same Supabase-not-configured gating.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chromium } from "playwright";

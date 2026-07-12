@@ -1,3 +1,5 @@
+// Vite build config for the customer portal: bundles the @fiducia/sync wasm core
+// and emits assets under the /_customer/ base where fiducia-backend.rs mounts them.
 import { defineConfig } from "vite";
 import wasm from "vite-plugin-wasm";
 

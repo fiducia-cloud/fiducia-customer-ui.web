@@ -1,3 +1,5 @@
+# CI: typecheck + production build, plus a best-effort full-browser E2E job that
+# boots the real backend and drives Chrome. Checks out sibling fiducia repos.
 name: ci
 on:
   push:

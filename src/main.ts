@@ -1,3 +1,7 @@
+// Entry point for the Fiducia customer portal browser bundle: wires Supabase auth
+// (password/passkey/2FA), the api_keys local-first sync vertical, preferences and
+// session controls, and the backend WS/SSE + Supabase realtime event streams into
+// the server-rendered HTMX shell.
 import "./styles.css";
 import htmx from "htmx.org";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";

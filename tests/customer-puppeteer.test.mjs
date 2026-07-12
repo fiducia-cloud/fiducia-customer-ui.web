@@ -1,3 +1,5 @@
+// Puppeteer E2E (mock backend path): a second-engine cross-check of auth/2FA
+// gating, session revoke, and API-key create/rotate against the customer portal.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import puppeteer from "puppeteer";

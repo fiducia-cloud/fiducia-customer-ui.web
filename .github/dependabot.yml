@@ -1,3 +1,4 @@
+# Dependabot: weekly update checks for npm dependencies and GitHub Actions.
 version: 2
 updates:
   - package-ecosystem: npm

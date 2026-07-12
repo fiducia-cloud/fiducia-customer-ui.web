@@ -1,3 +1,5 @@
+# Nix flake defining the Fiducia dev shell (Rust, Node/pnpm, and build tooling)
+# across Linux and macOS. Consumed via `nix develop ./.nix` and the repo's direnv.
 {
   description = "Fiducia development environment";
 

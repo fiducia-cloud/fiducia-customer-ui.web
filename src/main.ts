@@ -50,9 +50,9 @@ type CustomerApiKey = {
   scopes: string;
   last_used: string;
   status: string;
-  // Present only on DB-backed (synced) rows; absent on the mock path.
-  id?: string;
-  version?: number;
+  // Assigned by the authoritative customer Postgres row.
+  id: string;
+  version: number;
 };
 
 type ApiKeyListResponse = {
@@ -740,9 +740,8 @@ async function hydrateApiKeys() {
       }
     }
 
-    // Fallback (mock path / empty store / sync unavailable): render the plain list.
-    // The list endpoint also covers the no-DB mock rows (which carry no id/version
-    // and so never enter the local-first store).
+    // If local sync is unavailable, render the same authoritative Postgres rows
+    // directly from the list endpoint.
     const listed = await getJson<ApiKeyListResponse>("/api/customer/api-keys");
     body.textContent = "";
     listed.api_keys.forEach((row) => appendApiKeyRow(row, "append"));
@@ -780,17 +779,17 @@ async function createApiKey(form: HTMLFormElement) {
     // Creation is server-led: the create endpoint already minted the row (version 1),
     // persisted it, and broadcast a `fiducia:sync` frame. So creation must NOT go
     // through optimisticWrite — that would upsert + broadcast a *second* time (the
-    // create double-write). Instead, when the row is synced (has an id), write the
-    // returned row straight into the local store as clean: the server-assigned
+    // create double-write). Instead, write the returned authoritative row
+    // straight into the local store as clean: the server-assigned
     // version, not dirty, and with no durable-queue entry. Then re-render from the
     // store. optimisticWrite stays reserved for future EDITS (rename, scope changes),
-    // where the client leads the write. Falls back to a direct DOM append on the mock
-    // path (no id / no sync stack).
+    // where the client leads the write. If the local sync stack is unavailable,
+    // render the authoritative returned row directly.
     let rendered = false;
-    if (apiKeySync && key.id) {
+    if (apiKeySync) {
       try {
         await apiKeySync.store.put("api_keys", key.id, key, {
-          version: key.version ?? 0,
+          version: key.version,
           dirty: false
         });
         rendered = await renderApiKeysFromStore();

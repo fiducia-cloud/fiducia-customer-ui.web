@@ -4,8 +4,8 @@
 
 - This standalone customer SPA is deprecated and must not receive new feature work.
 - The canonical customer web application is the Rust MASH server in
-  `fiducia-backend.rs` (Maud, Axum, SeaORM, and HTMX).
-- The canonical static web repository is `fiducia-ui.web`, which is the marketing
+  `fiducia-customer.rs` (Maud, Axum, SeaORM, and HTMX).
+- The canonical static web repository is `fiducia-marketing.web`, which is the marketing
   site only.
 - Preserve this repository and its history until deployment references have been
   removed and archival is independently verified.

@@ -2,7 +2,7 @@
 
 Archived browser source for the retired standalone Fiducia customer portal,
 bundled by Vite into a complete static verification site in `dist/`. Production
-customer routes are rendered by `fiducia-backend.rs`; this bundle is not loaded
+customer routes are rendered by `fiducia-customer.rs`; this bundle is not loaded
 by either the customer or operator server.
 
 - `main.ts` — the single entry point. Wires Supabase auth (password, passkey, TOTP 2FA), optional `fiducia-auth` session verification, verified organization selection, the API-key create/rotate/revoke flow, user-namespaced preferences, and security-session controls into the static app shell. The customer API WS/SSE stream is a non-sensitive refresh heartbeat; credential metadata is fetched through authenticated, organization-scoped BFF routes.

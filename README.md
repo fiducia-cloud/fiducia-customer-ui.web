@@ -4,7 +4,7 @@
 > **Deprecated. Do not add features or deploy this SPA.**
 
 The canonical customer application is the Rust MASH server in
-[`fiducia-backend.rs`](https://github.com/fiducia-cloud/fiducia-backend.rs):
+[`fiducia-customer.rs`](https://github.com/fiducia-cloud/fiducia-customer.rs):
 
 - Maud renders customer HTML.
 - Axum owns routes, server-mediated Supabase login, and the isolated customer
@@ -16,7 +16,7 @@ The canonical customer application is the Rust MASH server in
   authenticated, tenant-scoped lifecycle requests and never stores raw secrets.
 
 The canonical static `.web` repository is
-[`fiducia-ui.web`](https://github.com/fiducia-cloud/fiducia-ui.web), the Astro
+[`fiducia-marketing.web`](https://github.com/fiducia-cloud/fiducia-marketing.web), the Astro
 marketing site only. The operator application remains the separate Rust MASH
 server in `fiducia-admin.rs`; customer and admin routes, cookies, browser state,
 databases, and authorization rules are not shared.
@@ -52,7 +52,7 @@ checks, per-user/per-org browser storage isolation, CSP-oriented static hosting,
 and sanitized refresh transport. Those controls remain useful historical
 evidence, but they do not supersede the server-mediated Supabase session,
 HttpOnly customer cookie, Maud escaping boundary, or SeaORM data plane in
-`fiducia-backend.rs`.
+`fiducia-customer.rs`.
 
 Archive this repository only after deployment manifests and monorepo submodule
 references have been independently verified to contain no remaining dependency.

@@ -37,6 +37,14 @@ npm run test:browser
 npm run build
 ```
 
+CI resolves the sole sibling test dependency, `fiducia-test-config`, at commit
+`4f8a4fa9c8115e1de69d58ec312cb3e17e05864f`. It does not compose this retired
+client with the backend, operator app, sync service, interfaces repository, or
+marketing site. Dependency installation is lockfile-only with lifecycle scripts
+disabled, and the optional archival container serves on port 8080 as an
+unprivileged nginx user. That image is verification evidence, not a supported
+deployment artifact.
+
 The preserved SPA contains customer-only contracts, same-origin executable-code
 checks, per-user/per-org browser storage isolation, CSP-oriented static hosting,
 and sanitized refresh transport. Those controls remain useful historical

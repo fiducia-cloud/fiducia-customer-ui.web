@@ -1,5 +1,6 @@
-# CI: typecheck + production build, plus a best-effort full-browser E2E job that
-# boots the real backend and drives Chrome. Checks out sibling fiducia repos.
+# Archival CI: typecheck + production build, plus gating browser checks against
+# the isolated customer fixture. The retired SPA must not compose with the live
+# backend, admin application, or marketing site.
 name: ci
 on:
   push:
@@ -11,92 +12,53 @@ permissions:
   contents: read
 
 jobs:
-  # Typecheck + production build. Needs the sibling `file:../` deps
-  # (@fiducia/interfaces, @fiducia/test-config, @fiducia/sync) and the sync
-  # bundler-target wasm the SDK loads at build time.
+  # Typecheck + production build. The only sibling dependency is the locked
+  # browser/server harness exposed by @fiducia/test-config.
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           path: fiducia-customer-ui.web
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          repository: fiducia-cloud/fiducia-interfaces
-          path: fiducia-interfaces
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
           repository: fiducia-cloud/fiducia-test-config
+          ref: 4f8a4fa9c8115e1de69d58ec312cb3e17e05864f
           path: fiducia-test-config
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          repository: fiducia-cloud/fiducia-sync
-          path: fiducia-sync
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "22"
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
-      # The @fiducia/sync SDK loads ../pkg (the bundler-target wasm) at build time;
-      # build it from the sync crate with the rustup toolchain before Vite runs.
-      - name: build sync wasm (bundler target)
-        working-directory: fiducia-sync
-        run: wasm-pack build --target bundler --out-dir pkg -- --features wasm
-      - run: npm ci
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
         working-directory: fiducia-customer-ui.web
       - run: npm run check
         working-directory: fiducia-customer-ui.web
       - run: npm run build
         working-directory: fiducia-customer-ui.web
 
-  # Full-browser E2E: builds the app, boots the real fiducia-backend.rs serving
-  # the built dist, and drives Chrome. Best-effort (needs Chrome + several sibling
-  # repos), so it never gates the build.
+  # Full-browser regression checks for the preserved standalone shell. The
+  # fixture exposes only the sanitized customer BFF contract and carries no
+  # production identity or credential authority.
   browser-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    continue-on-error: true
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           path: fiducia-customer-ui.web
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          repository: fiducia-cloud/fiducia-interfaces
-          path: fiducia-interfaces
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
           repository: fiducia-cloud/fiducia-test-config
+          ref: 4f8a4fa9c8115e1de69d58ec312cb3e17e05864f
           path: fiducia-test-config
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          repository: fiducia-cloud/fiducia-sync
-          path: fiducia-sync
-      # The E2E harness boots ../fiducia-backend.rs (serving the customer dist) and
-      # points STATIC_DIR at ../fiducia-ui.web/dist, so both siblings must be present.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          repository: fiducia-cloud/fiducia-backend.rs
-          path: fiducia-backend.rs
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-        with:
-          repository: fiducia-cloud/fiducia-ui.web
-          path: fiducia-ui.web
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: "22"
-      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
-        with:
-          targets: wasm32-unknown-unknown
-      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
       - id: chrome
         uses: browser-actions/setup-chrome@2e1d749697dd1612b833dba4a722266286fbefcd # v2
-      - name: build sync wasm (bundler target)
-        working-directory: fiducia-sync
-        run: wasm-pack build --target bundler --out-dir pkg -- --features wasm
-      - run: npm ci
+      - name: Install locked dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts
         working-directory: fiducia-customer-ui.web
       - name: browser tests
         working-directory: fiducia-customer-ui.web

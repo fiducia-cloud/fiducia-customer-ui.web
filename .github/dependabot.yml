@@ -1,4 +1,4 @@
-# Dependabot: weekly update checks for npm dependencies and GitHub Actions.
+# Dependabot: weekly update checks for npm, GitHub Actions, and container bases.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -6,6 +6,10 @@ updates:
     schedule:
       interval: weekly
   - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
     directory: "/"
     schedule:
       interval: weekly

@@ -45,12 +45,37 @@ The current client listens for changes on:
 - `public.fiducia_kv`
 - `public.fiducia_services`
 
-The browser also opens one stream to `fiducia-backend.rs`:
+The browser also opens one non-sensitive heartbeat stream to
+`fiducia-backend.rs`:
 
 - WebSocket: `/app/ws`
 - SSE fallback: `/app/events`
 
-The backend stream sends rendered HTML fragments for the dashboard panels, so
-normal updates do not need a fresh HTMX HTTP request for each fragment. The
-manual refresh button and `fiducia:refresh` HTMX event remain available as
-fallback paths.
+The backend stream carries generic refresh frames and rendered public shell
+fragments only; it never transports customer rows or API-key metadata. Customer
+records reconcile through authenticated catch-up requests or Supabase RLS.
+IndexedDB databases are namespaced by the authenticated Supabase user so one
+browser account cannot render another account's cached rows. The manual refresh
+button and `fiducia:refresh` HTMX event remain available as fallback paths.
+
+## Security posture
+
+- **Client-safe vs server-only secrets.** Only `SUPABASE_URL` and
+  `SUPABASE_ANON_KEY` reach the browser — the anon key is designed to be public
+  and is guarded by Supabase Row Level Security. The `SUPABASE_SERVICE_ROLE` key
+  is **server-only** and must never be shipped to the client or placed in
+  `FIDUCIA_CUSTOMER_CONFIG`. `npm audit --omit=dev` reports 0 vulnerabilities.
+- **Config injection is not XSS-able from the client.** The portal reads
+  `window.FIDUCIA_CUSTOMER_CONFIG` as a structured object merged over defaults;
+  its values are never interpolated into HTML. (The backend that serializes that
+  object into the inline `<script>` owns escaping it safely.)
+- **Stream fragments are trusted, server-rendered HTML.** The single
+  `applyStreamFragments()` `innerHTML` sink consumes HTML fragments rendered by
+  `fiducia-backend.rs` (Axum + Maud) over the authenticated same-origin panel
+  stream — the backend is the escaping boundary; the stream never carries
+  customer rows or API-key metadata. All customer/API-key values render through
+  `textContent`/`createElement`, never `innerHTML`.
+- **HTTP security headers** (CSP, `X-Content-Type-Options`,
+  `X-Frame-Options`/`frame-ancestors`, `Referrer-Policy`) and cookie flags
+  (`HttpOnly`/`Secure`/`SameSite` on the backend session cookie) are set by
+  `fiducia-backend.rs`; this Vite build ships no cookies of its own.

@@ -6,7 +6,6 @@ import "./styles.css";
 import htmx from "htmx.org";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
 import {
-  connectBackend,
   loadBrowserCore,
   makeQueue,
   makeSyncClient,
@@ -215,6 +214,8 @@ let pendingMfaFactorId: string | null = null;
 // core + IndexedDB store come up; when null the view falls back to the fetch path.
 type ApiKeySyncHandle = { store: SyncStore; client: SyncClient };
 let apiKeySync: ApiKeySyncHandle | null = null;
+let activeSyncUserId: string | null | undefined;
+let syncGeneration = 0;
 
 setBackendStatus("connecting");
 setRealtimeStatus(supabaseClient ? "connecting" : "offline");
@@ -278,11 +279,39 @@ function initializeAuth(client: SupabaseClient | null) {
     }
 
     renderAuthSession(data.session ?? null);
+    void activateCustomerSession(data.session ?? null);
   });
 
   client.auth.onAuthStateChange((_event, session) => {
     renderAuthSession(session);
+    void activateCustomerSession(session);
   });
+}
+
+async function activateCustomerSession(session: Session | null) {
+  const nextUserId = session?.user.id ?? null;
+  if (activeSyncUserId === nextUserId) {
+    return;
+  }
+
+  activeSyncUserId = nextUserId;
+  const generation = ++syncGeneration;
+  apiKeySync?.store.close();
+  apiKeySync = null;
+
+  const body = apiKeyTableBody();
+  if (body) {
+    body.textContent = "";
+  }
+  if (!nextUserId) {
+    setApiKeyMessage("Sign in to load customer API keys.");
+    return;
+  }
+
+  await setupApiKeySync(nextUserId, generation);
+  if (generation === syncGeneration) {
+    await hydrateApiKeys();
+  }
 }
 
 function bindAuthForms(client: SupabaseClient | null) {
@@ -572,12 +601,6 @@ async function verifyTotp(client: SupabaseClient) {
 }
 
 function bindApiKeyControls() {
-  // Bring up the local-first sync stack (best-effort) before the first hydrate so
-  // the table can render from IndexedDB when the DB-backed path is live. Only when
-  // the api-keys table is actually on the page.
-  const ready = apiKeyTableBody() ? setupApiKeySync() : Promise.resolve();
-  void ready.then(() => hydrateApiKeys());
-
   const form = document.querySelector<HTMLFormElement>("[data-api-key-form]");
   form?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -597,32 +620,21 @@ function bindApiKeyControls() {
 // that folds committed `fiducia:sync` changes into the store. Best-effort: any
 // failure (no wasm, no IndexedDB) leaves `apiKeySync` null and the view falls back
 // to the plain fetch path, so the portal degrades gracefully and never throws.
-async function setupApiKeySync(): Promise<void> {
+async function setupApiKeySync(userId: string, generation: number): Promise<void> {
   try {
     const core = await loadBrowserCore();
-    const store = await openStore("fiducia-customer", ["api_keys"]);
+    const safeUserId = userId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const store = await openStore(`fiducia-customer-${safeUserId}`, ["api_keys"]);
+    if (generation !== syncGeneration) {
+      store.close();
+      return;
+    }
     const queue = makeQueue(store);
     const client = makeSyncClient({ store, queue, core });
     apiKeySync = { store, client };
 
-    // Transport 1: the backend WS/SSE (always available, carries `version`).
-    // Re-hydrate on every (re)connect so a reconnect catches up on anything the
-    // streams missed while the socket was down.
-    connectBackend({
-      baseUrl: location.origin,
-      onChanges: (changes) => {
-        void applyApiKeyChanges(changes);
-      },
-      onStatus: (status) => {
-        if (status === "open") {
-          void hydrateApiKeys();
-        }
-      }
-    });
-
-    // Transport 2: Supabase realtime, folded into the SAME reconcile client. Both
-    // transports converge because reconcile is idempotent (a re-seen version is
-    // ignored), so this is pure resilience — sync no longer depends on one channel.
+    // Supabase realtime is tenant-filtered by RLS and folded into the same
+    // reconcile client. The public backend heartbeat stream never carries rows.
     // Requires the synced tables to be in the supabase_realtime publication +
     // REPLICA IDENTITY FULL (see fiducia-interfaces sql/customer.sql).
     if (supabaseClient) {
@@ -634,8 +646,6 @@ async function setupApiKeySync(): Promise<void> {
         }
       });
     }
-    // The initial catch-up hydration is kicked off by the caller (bindApiKeyControls)
-    // once setup resolves; reconnects re-hydrate via the WS onStatus "open" above.
   } catch (error) {
     apiKeySync = null;
     console.debug("api_keys sync unavailable; using fetch fallback:", errorMessage(error));
@@ -1250,6 +1260,9 @@ function handleBackendStreamMessage(data: unknown, transport: BackendStreamMessa
   backendStreamReady = true;
   setBackendStatus(transport === "websocket" ? "websocket" : "sse");
   applyStreamFragments(parsed.fragments);
+  if (parsed.kind === "refresh" && activeSyncUserId) {
+    void hydrateApiKeys();
+  }
   appendEvent({
     topic: "Backend Stream",
     verb: parsed.kind,

@@ -74,6 +74,10 @@ function startDbBackedPortal() {
       CUSTOMER_STATIC_DIR: "../fiducia-customer-ui.web/dist",
       FIDUCIA_SITE_MODE: "customer",
       STATIC_DIR: "../fiducia-ui.web/dist",
+      // /api/customer/* is auth-gated; the DB path is no exception. Opt into the
+      // debug-only fixed-session authenticator (same as the mock-path harness) so
+      // create/list aren't Denied. Release binaries ignore it — fail-closed.
+      FIDUCIA_E2E_STATIC_CUSTOMER_AUTH: "1",
     },
     readyPath: "/app",
     startupTimeoutMs: 90000,

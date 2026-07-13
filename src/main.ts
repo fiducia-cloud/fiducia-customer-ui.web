@@ -645,30 +645,8 @@ async function setupApiKeySync(): Promise<void> {
   }
 }
 
-// Guards against overlapping hydrations (initial + a racing WS "open").
+// Guards against overlapping hydrations (initial load + a racing WS "open").
 let hydratingApiKeys = false;
-
-// Cold-start / reconnect catch-up: fetch the authoritative api_keys snapshot and
-// reconcile it into the store. `prune: true` treats the snapshot as the complete
-// set, so rows deleted server-side while we were away are removed locally. No-op
-// (and never throws) when sync isn't up or the fetch fails.
-async function hydrateApiKeys(): Promise<void> {
-  if (!apiKeySync || hydratingApiKeys) {
-    return;
-  }
-  hydratingApiKeys = true;
-  try {
-    const rows = await fetchApiKeyCatchup();
-    if (rows) {
-      await apiKeySync.client.hydrate("api_keys", rows, { prune: true });
-      await renderApiKeysFromStore();
-    }
-  } catch (error) {
-    console.debug("api_keys catch-up hydration failed:", errorMessage(error));
-  } finally {
-    hydratingApiKeys = false;
-  }
-}
 
 // The indexed catch-up endpoint (GET /api/customer/sync/api_keys?since=0 → the
 // full authoritative snapshot). `since=0` so we get every row and can prune; the

@@ -606,10 +606,17 @@ async function setupApiKeySync(): Promise<void> {
     apiKeySync = { store, client };
 
     // Transport 1: the backend WS/SSE (always available, carries `version`).
+    // Re-hydrate on every (re)connect so a reconnect catches up on anything the
+    // streams missed while the socket was down.
     connectBackend({
       baseUrl: location.origin,
       onChanges: (changes) => {
         void applyApiKeyChanges(changes);
+      },
+      onStatus: (status) => {
+        if (status === "open") {
+          void hydrateApiKeys();
+        }
       }
     });
 
@@ -627,9 +634,33 @@ async function setupApiKeySync(): Promise<void> {
         }
       });
     }
+    // The initial catch-up hydration is kicked off by the caller (bindApiKeyControls)
+    // once setup resolves; reconnects re-hydrate via the WS onStatus "open" above.
   } catch (error) {
     apiKeySync = null;
     console.debug("api_keys sync unavailable; using fetch fallback:", errorMessage(error));
+  }
+}
+
+// Guards against overlapping hydrations (initial load + a racing WS "open").
+let hydratingApiKeys = false;
+
+// The indexed catch-up endpoint (GET /api/customer/sync/api_keys?since=0 → the
+// full authoritative snapshot). `since=0` so we get every row and can prune; the
+// server orders by version and the query is index-backed. Returns null on any
+// failure so the caller degrades gracefully.
+async function fetchApiKeyCatchup(): Promise<CustomerApiKey[] | null> {
+  try {
+    const response = await fetch(resolveApiUrl("/api/customer/sync/api_keys?since=0"), {
+      headers: await authHeaders()
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const body = (await response.json()) as { rows?: CustomerApiKey[] };
+    return Array.isArray(body.rows) ? body.rows : [];
+  } catch {
+    return null;
   }
 }
 
@@ -683,44 +714,43 @@ async function renderApiKeysFromStore(): Promise<boolean> {
   return true;
 }
 
+// Cold-start / reconnect catch-up. Runs on initial load and on every WS reconnect
+// so changes that landed while this client was away show up immediately. Reentry
+// is guarded (the initial call can race the first WS "open").
 async function hydrateApiKeys() {
   const body = apiKeyTableBody();
-  if (!body) {
+  if (!body || hydratingApiKeys) {
     return;
   }
+  hydratingApiKeys = true;
 
   try {
-    const listed = await getJson<ApiKeyListResponse>("/api/customer/api-keys");
-
-    // Seed the local store from the authoritative list. DB-backed rows carry an
-    // `id` + `version`; mock rows do not, so nothing is stored on the mock path.
+    // Local-first: reconcile the authoritative snapshot from the INDEXED catch-up
+    // endpoint THROUGH the sync client. Unlike a raw store.put seed this goes via
+    // reconcile — so un-acked optimistic edits survive, and `prune: true` drops
+    // rows deleted server-side while we were away.
     if (apiKeySync) {
-      try {
-        for (const row of listed.api_keys) {
-          if (row.id) {
-            await apiKeySync.store.put("api_keys", row.id, row, {
-              version: row.version ?? 0,
-              dirty: false
-            });
-          }
+      const rows = await fetchApiKeyCatchup();
+      if (rows) {
+        await apiKeySync.client.hydrate("api_keys", rows, { prune: true });
+        if (await renderApiKeysFromStore()) {
+          setApiKeyMessage(`Loaded ${rows.length} customer API keys (local-first).`);
+          return;
         }
-      } catch (error) {
-        console.debug("seeding api_keys store failed:", errorMessage(error));
-      }
-
-      // Prefer the local-first store when it holds anything.
-      if (await renderApiKeysFromStore()) {
-        setApiKeyMessage(`Loaded ${listed.api_keys.length} customer API keys (local-first).`);
-        return;
       }
     }
 
-    // Fallback: render straight from the fetched list (mock path / empty store).
+    // Fallback (mock path / empty store / sync unavailable): render the plain list.
+    // The list endpoint also covers the no-DB mock rows (which carry no id/version
+    // and so never enter the local-first store).
+    const listed = await getJson<ApiKeyListResponse>("/api/customer/api-keys");
     body.textContent = "";
     listed.api_keys.forEach((row) => appendApiKeyRow(row, "append"));
     setApiKeyMessage(`Loaded ${listed.api_keys.length} customer API keys.`);
   } catch (error) {
     setApiKeyMessage(`${errorMessage(error)} Showing server-rendered keys.`);
+  } finally {
+    hydratingApiKeys = false;
   }
 }
 
@@ -988,8 +1018,27 @@ function setCheckboxValue(form: HTMLFormElement, name: string, value: unknown) {
   }
 }
 
+// Attach the caller's Supabase session as a bearer token. The customer backend
+// gates every /api/customer/* route on a verified session (fiducia-auth GET
+// /v1/me) and scopes mutations to the caller's org, so these calls must carry it.
+async function authHeaders(base: Record<string, string> = {}): Promise<Record<string, string>> {
+  const headers = { ...base };
+  if (supabaseClient) {
+    try {
+      const { data } = await supabaseClient.auth.getSession();
+      const token = data.session?.access_token;
+      if (token) {
+        headers.authorization = `Bearer ${token}`;
+      }
+    } catch {
+      // No session — send the request unauthenticated and let the server 401.
+    }
+  }
+  return headers;
+}
+
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(resolveApiUrl(path));
+  const response = await fetch(resolveApiUrl(path), { headers: await authHeaders() });
   const value = (await response.json()) as T;
 
   if (!response.ok) {
@@ -1011,9 +1060,7 @@ async function putJson<T>(path: string, payload: unknown): Promise<T> {
 async function requestJson<T>(method: "POST" | "PUT", path: string, payload: unknown): Promise<T> {
   const response = await fetch(resolveApiUrl(path), {
     body: JSON.stringify(payload),
-    headers: {
-      "content-type": "application/json"
-    },
+    headers: await authHeaders({ "content-type": "application/json" }),
     method
   });
   const value = (await response.json()) as T;

@@ -23,6 +23,7 @@ export function startCustomerPortal() {
     cwd: backendRepo,
     env: {
       CUSTOMER_STATIC_DIR: "../fiducia-customer-ui.web/dist",
+      FIDUCIA_E2E_STATIC_CUSTOMER_AUTH: "1",
       FIDUCIA_SITE_MODE: "customer",
       STATIC_DIR: "../fiducia-ui.web/dist",
     },

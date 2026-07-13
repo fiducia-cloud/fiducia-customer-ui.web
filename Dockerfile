@@ -7,7 +7,7 @@ RUN npm ci --omit=dev --ignore-scripts
 COPY . .
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.27.5-alpine@sha256:65e3e85dbaed8ba248841d9d58a899b6197106c23cb0ff1a132b7bfe0547e4c0
+FROM nginxinc/nginx-unprivileged:1.31.2-alpine@sha256:6320020c7da8714feab524e02c08c5a1958675c4e68700e93a2fd8970b065786
 # Hardened server block: security headers (CSP, nosniff, frame-ancestors),
 # no-stale caching for the deploy-swappable /config.js, SPA route fallback.
 COPY --chown=101:101 nginx.conf /etc/nginx/conf.d/default.conf

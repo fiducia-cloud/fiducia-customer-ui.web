@@ -1044,8 +1044,27 @@ function setCheckboxValue(form: HTMLFormElement, name: string, value: unknown) {
   }
 }
 
+// Attach the caller's Supabase session as a bearer token. The customer backend
+// gates every /api/customer/* route on a verified session (fiducia-auth GET
+// /v1/me) and scopes mutations to the caller's org, so these calls must carry it.
+async function authHeaders(base: Record<string, string> = {}): Promise<Record<string, string>> {
+  const headers = { ...base };
+  if (supabaseClient) {
+    try {
+      const { data } = await supabaseClient.auth.getSession();
+      const token = data.session?.access_token;
+      if (token) {
+        headers.authorization = `Bearer ${token}`;
+      }
+    } catch {
+      // No session — send the request unauthenticated and let the server 401.
+    }
+  }
+  return headers;
+}
+
 async function getJson<T>(path: string): Promise<T> {
-  const response = await fetch(resolveApiUrl(path));
+  const response = await fetch(resolveApiUrl(path), { headers: await authHeaders() });
   const value = (await response.json()) as T;
 
   if (!response.ok) {
@@ -1067,9 +1086,7 @@ async function putJson<T>(path: string, payload: unknown): Promise<T> {
 async function requestJson<T>(method: "POST" | "PUT", path: string, payload: unknown): Promise<T> {
   const response = await fetch(resolveApiUrl(path), {
     body: JSON.stringify(payload),
-    headers: {
-      "content-type": "application/json"
-    },
+    headers: await authHeaders({ "content-type": "application/json" }),
     method
   });
   const value = (await response.json()) as T;

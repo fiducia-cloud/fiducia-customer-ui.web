@@ -726,7 +726,11 @@ async function setupApiKeySync(userId: string, orgId: string, generation: number
   }
 
   try {
-    const sync = (await import(/* @vite-ignore */ config.syncModuleUrl)) as SyncModule;
+    const moduleUrl = new URL(config.syncModuleUrl, window.location.origin);
+    if (moduleUrl.origin !== window.location.origin) {
+      throw new Error("sync module must be served from the customer application origin");
+    }
+    const sync = (await import(/* @vite-ignore */ moduleUrl.href)) as SyncModule;
     const core = await sync.loadBrowserCore();
     const safeUserId = userId.replace(/[^a-zA-Z0-9_-]/g, "_");
     const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "_");

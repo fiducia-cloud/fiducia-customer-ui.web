@@ -61,9 +61,10 @@ may run on different origins. `authBase` enables the explicit browser-side
 `/v1/me` verification. Both services must allow the customer origin through
 their CORS policy.
 
-`syncModuleUrl` is optional. When supplied, the portal loads the local-first
-sync SDK as a runtime enhancement. A missing SDK never blocks the build or the
-authoritative customer API fallback.
+`syncModuleUrl` is optional. When supplied, it must resolve to the customer
+application's own origin; the portal refuses to execute a cross-origin runtime
+module. A missing SDK never blocks the build or the authoritative customer API
+fallback.
 
 The old backend-rendered shell remains compatible with `assets/customer.js` and
 `assets/customer.css` during migration, but new deployments should serve this
@@ -115,8 +116,11 @@ never writes credential rows directly.
   whenever either changes. Preference fallbacks are user-namespaced. One
   account or tenant cannot render another account's cached customer state.
 - **Authenticated reconciliation.** Customer records reconcile through bearer-
-  authenticated catch-up requests or Supabase RLS. The backend WS/SSE channel is
-  only a heartbeat/refresh signal and never transports API-key rows.
+  authenticated BFF catch-up requests. The backend WS/SSE channel is only a
+  heartbeat/refresh signal and never transports API-key rows.
+- **Same-origin executable code.** The optional runtime sync module must resolve
+  to the portal origin, and the standalone nginx CSP permits scripts only from
+  `'self'`.
 - **Structured runtime config.** The portal consumes
   `window.FIDUCIA_CUSTOMER_CONFIG` as data and never interpolates its values into
   HTML.

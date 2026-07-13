@@ -645,6 +645,50 @@ async function setupApiKeySync(): Promise<void> {
   }
 }
 
+// Guards against overlapping hydrations (initial + a racing WS "open").
+let hydratingApiKeys = false;
+
+// Cold-start / reconnect catch-up: fetch the authoritative api_keys snapshot and
+// reconcile it into the store. `prune: true` treats the snapshot as the complete
+// set, so rows deleted server-side while we were away are removed locally. No-op
+// (and never throws) when sync isn't up or the fetch fails.
+async function hydrateApiKeys(): Promise<void> {
+  if (!apiKeySync || hydratingApiKeys) {
+    return;
+  }
+  hydratingApiKeys = true;
+  try {
+    const rows = await fetchApiKeyCatchup();
+    if (rows) {
+      await apiKeySync.client.hydrate("api_keys", rows, { prune: true });
+      await renderApiKeysFromStore();
+    }
+  } catch (error) {
+    console.debug("api_keys catch-up hydration failed:", errorMessage(error));
+  } finally {
+    hydratingApiKeys = false;
+  }
+}
+
+// The indexed catch-up endpoint (GET /api/customer/sync/api_keys?since=0 → the
+// full authoritative snapshot). `since=0` so we get every row and can prune; the
+// server orders by version and the query is index-backed. Returns null on any
+// failure so the caller degrades gracefully.
+async function fetchApiKeyCatchup(): Promise<CustomerApiKey[] | null> {
+  try {
+    const response = await fetch(resolveApiUrl("/api/customer/sync/api_keys?since=0"), {
+      headers: await authHeaders()
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const body = (await response.json()) as { rows?: CustomerApiKey[] };
+    return Array.isArray(body.rows) ? body.rows : [];
+  } catch {
+    return null;
+  }
+}
+
 // Fold committed changes (from the backend WS/SSE) into the local store, then
 // re-render the table from the store. Guarded so a bad frame never surfaces as a
 // page error.

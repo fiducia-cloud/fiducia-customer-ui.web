@@ -11,25 +11,30 @@ export { chromeExecutablePath, launchOptions } from "@fiducia/test-config/harnes
 
 const testsDir = dirname(fileURLToPath(import.meta.url));
 const customerRepo = resolve(testsDir, "..");
-const backendRepo = resolve(customerRepo, "../fiducia-backend.rs");
-
-// Boots the real fiducia-backend.rs (axum + Maud) serving this repo's built
-// Vite assets, exactly as production does. Set FIDUCIA_CUSTOMER_TEST_URL to run
-// the suite against an already-running portal (e.g. in CI) instead of spawning.
+// Boots this repo's complete static app with a customer-API fixture. Frontend
+// tests intentionally do not depend on another application's HTML or startup
+// requirements. Set FIDUCIA_CUSTOMER_TEST_URL to reuse a deployed test portal.
 export function startCustomerPortal() {
   return startServer({
-    command: "cargo",
-    args: ["run"],
-    cwd: backendRepo,
-    env: {
-      CUSTOMER_STATIC_DIR: "../fiducia-customer-ui.web/dist",
-      FIDUCIA_E2E_ALLOW_NO_DATABASE: "1",
-      FIDUCIA_E2E_STATIC_CUSTOMER_AUTH: "1",
-      FIDUCIA_SITE_MODE: "customer",
-      STATIC_DIR: "../fiducia-ui.web/dist",
-    },
+    command: process.execPath,
+    args: ["tests/customer-fixture-server.mjs"],
+    cwd: customerRepo,
     readyPath: "/app",
     reuseUrlEnv: "FIDUCIA_CUSTOMER_TEST_URL",
     startupTimeoutMs: 45000,
+  });
+}
+
+// Boots this repository's own static application. This catches accidental
+// regressions where only the legacy backend-rendered shell remains usable.
+export function startStandaloneCustomerPortal() {
+  return startServer({
+    command: "npm",
+    args: ["run", "preview", "--"],
+    cwd: customerRepo,
+    portArgs: (port) => ["--port", String(port)],
+    readyPath: "/",
+    reuseUrlEnv: "FIDUCIA_CUSTOMER_STANDALONE_TEST_URL",
+    startupTimeoutMs: 30000,
   });
 }

@@ -23,13 +23,13 @@ test("playwright drives API keys and preferences through the customer portal", a
   await installPlaywrightCustomerApiMock(page);
 
   await page.goto(`${server.url}/app`, { waitUntil: "networkidle" });
-  await assertVisibleText(page, "Dashboard");
+  await assertVisibleText(page, "Customer workspace");
   await assertVisibleText(page, "Supabase Auth");
   await assertVisibleText(page, "API Keys");
 
   await page.getByRole("link", { name: /API Keys/ }).click();
-  await page.getByLabel("Name").fill("Playwright issued key");
-  await page.getByLabel("Scopes").selectOption("requests:write");
+  await page.getByLabel("Name", { exact: true }).fill("Playwright issued key");
+  await page.getByLabel("Scope").selectOption("requests:write");
   await page.getByRole("button", { name: "Create key" }).click();
   await assertVisibleText(page, "Playwright issued key created. Secret is shown once:");
   await assertVisibleText(page, "Playwright issued key");
@@ -42,7 +42,7 @@ test("playwright drives API keys and preferences through the customer portal", a
   await safariRow.getByText("Provider managed").waitFor({ state: "visible" });
 
   await page.getByRole("link", { name: /Settings/ }).click();
-  await page.getByLabel("Dashboard density").selectOption("compact");
+  await page.getByLabel("Density").selectOption("compact");
   await page.getByRole("button", { name: "Save preferences" }).click();
   await assertVisibleText(page, "Preferences saved.");
 
@@ -69,8 +69,8 @@ test("playwright verifies password, passkey, and 2FA controls share Supabase gat
   await assertVisibleText(page, "Sign up");
   await assertVisibleText(page, "Sign in with passkey");
   assert.equal(await page.locator("[data-auth-form] input:disabled").count(), 7);
-  assert.equal(await page.locator("[data-passkey-action]").count(), 1);
-  assert.equal(await page.locator("[data-passkey-action]:disabled").count(), 1);
+  assert.equal(await page.locator("[data-passkey-action]").count(), 2);
+  assert.equal(await page.locator("[data-passkey-action]:disabled").count(), 2);
 
   await page.goto(`${server.url}/app/security`, { waitUntil: "networkidle" });
   await assertVisibleText(page, "Two-factor authentication");

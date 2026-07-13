@@ -7,3 +7,18 @@ dist/
 .env
 .env.*
 !.env.example
+
+# --- hardened baseline (auto) ---
+Thumbs.db
+*.swp
+*~
+tmp/
+.direnv/
+.next/
+.astro/
+.cache/
+coverage/
+*.tsbuildinfo
+pkg/
+pkg-node/
+*-debug.log*

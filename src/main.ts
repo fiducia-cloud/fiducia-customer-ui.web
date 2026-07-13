@@ -606,10 +606,17 @@ async function setupApiKeySync(): Promise<void> {
     apiKeySync = { store, client };
 
     // Transport 1: the backend WS/SSE (always available, carries `version`).
+    // Re-hydrate on every (re)connect so a reconnect catches up on anything the
+    // streams missed while the socket was down.
     connectBackend({
       baseUrl: location.origin,
       onChanges: (changes) => {
         void applyApiKeyChanges(changes);
+      },
+      onStatus: (status) => {
+        if (status === "open") {
+          void hydrateApiKeys();
+        }
       }
     });
 
@@ -627,6 +634,11 @@ async function setupApiKeySync(): Promise<void> {
         }
       });
     }
+
+    // Cold-start catch-up: pull the authoritative snapshot over HTTP and reconcile
+    // it, so changes that landed while this client was away show up immediately
+    // (not only on the next live change). Runs now and again on each reconnect.
+    await hydrateApiKeys();
   } catch (error) {
     apiKeySync = null;
     console.debug("api_keys sync unavailable; using fetch fallback:", errorMessage(error));

@@ -1,24 +1,250 @@
-<!-- Dev/standalone HTML entry for the customer portal; loads src/main.ts. In production the backend renders the full portal shell and injects FIDUCIA_CUSTOMER_CONFIG. -->
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Fiducia customer account and API operations portal" />
     <title>Fiducia Customer Portal</title>
-    <script>
-      window.FIDUCIA_CUSTOMER_CONFIG = {
-        apiBase: "",
-        supabaseUrl: "",
-        supabaseAnonKey: ""
-      };
-    </script>
+    <script src="/config.js"></script>
   </head>
   <body>
     <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand__mark" aria-hidden="true">F</div>
+          <div class="brand__text">
+            <div class="brand__name">Fiducia Customer Portal</div>
+            <div class="brand__subdomain">app.fiducia.cloud</div>
+          </div>
+        </div>
+        <div class="topbar__status" aria-label="Connection status">
+          <span class="status-pill" data-backend-stream-status data-status="connecting">connecting</span>
+          <span class="status-pill" data-supabase-status data-status="offline">offline</span>
+          <span class="status-pill" data-auth-status data-status="offline">signed out</span>
+        </div>
+      </header>
+
       <main class="workspace">
-        <section class="workspace__main" aria-labelledby="dev-title">
-          <h1 id="dev-title">Customer Portal</h1>
-          <div id="realtime-events" class="event-stream" aria-live="polite"></div>
+        <aside class="sidebar">
+          <section class="sidebar__section">
+            <p class="sidebar__label">Customer workspace</p>
+            <nav class="nav" aria-label="Customer portal">
+              <a href="#account"><span>Account</span></a>
+              <a href="#api-keys"><span>API Keys</span></a>
+              <a href="#security"><span>Security</span></a>
+              <a href="#settings"><span>Settings</span></a>
+              <a href="#events"><span>Realtime</span></a>
+            </nav>
+          </section>
+          <section class="sidebar__section">
+            <p class="sidebar__label">Signed in as</p>
+            <p class="mono" data-auth-email>No customer signed in</p>
+            <button type="button" data-auth-action="sign-out" data-requires-supabase>Log out</button>
+          </section>
+        </aside>
+
+        <section class="workspace__main" aria-labelledby="portal-title">
+          <div class="page-heading">
+            <div>
+              <h1 id="portal-title">Customer workspace</h1>
+              <p>Manage your Fiducia account, credentials, and customer-plane preferences.</p>
+            </div>
+          </div>
+
+          <section id="account" aria-labelledby="account-heading">
+            <div class="page-heading">
+              <div>
+                <h2 id="account-heading">Login &amp; signup</h2>
+                <p>Supabase establishes identity; fiducia-auth verifies the session and organization membership.</p>
+              </div>
+            </div>
+            <div class="panel-grid panel-grid--forms">
+              <section class="panel" aria-labelledby="signin-heading">
+                <div class="panel__header">
+                  <h2 id="signin-heading">Login</h2>
+                  <span data-auth-status>signed out</span>
+                </div>
+                <form class="form-grid" data-auth-form="sign-in">
+                  <label>
+                    <span>Email</span>
+                    <input type="email" name="email" autocomplete="email" required data-requires-supabase />
+                  </label>
+                  <label>
+                    <span>Password</span>
+                    <input type="password" name="password" autocomplete="current-password" required data-requires-supabase />
+                  </label>
+                  <button type="submit" data-requires-supabase>Login</button>
+                </form>
+              </section>
+
+              <section class="panel" aria-labelledby="signup-heading">
+                <div class="panel__header">
+                  <h2 id="signup-heading">Sign up</h2>
+                  <span>customer account</span>
+                </div>
+                <form class="form-grid" data-auth-form="sign-up">
+                  <label>
+                    <span>Work email</span>
+                    <input type="email" name="email" autocomplete="email" required data-requires-supabase />
+                  </label>
+                  <label>
+                    <span>Full name</span>
+                    <input type="text" name="full_name" autocomplete="name" required data-requires-supabase />
+                  </label>
+                  <label>
+                    <span>Company</span>
+                    <input type="text" name="company_name" autocomplete="organization" data-requires-supabase />
+                  </label>
+                  <label>
+                    <span>Password</span>
+                    <input type="password" name="password" autocomplete="new-password" minlength="8" required data-requires-supabase />
+                  </label>
+                  <button type="submit" data-requires-supabase>Create account</button>
+                </form>
+              </section>
+            </div>
+
+            <section class="panel" aria-labelledby="magic-heading">
+              <div class="panel__header">
+                <h2 id="magic-heading">Passwordless access</h2>
+                <span>Supabase Auth</span>
+              </div>
+              <div class="split-panel">
+                <form class="form-grid" data-auth-form="magic-link">
+                  <label>
+                    <span>Email</span>
+                    <input type="email" name="email" autocomplete="email" required data-requires-supabase />
+                  </label>
+                  <button type="submit" data-requires-supabase>Send magic link</button>
+                </form>
+                <div class="session-box">
+                  <p class="eyebrow">Passkey</p>
+                  <button type="button" data-passkey-action="sign-in" data-requires-supabase>Sign in with passkey</button>
+                </div>
+              </div>
+              <div class="inline-message" data-auth-message aria-live="polite"></div>
+            </section>
+
+            <section class="panel" aria-labelledby="organization-heading" data-org-panel hidden>
+              <div class="panel__header">
+                <h2 id="organization-heading">Organization</h2>
+                <span>verified membership</span>
+              </div>
+              <div class="panel-body stack">
+                <label class="form-field">
+                  <span>Active organization</span>
+                  <select data-org-select disabled>
+                    <option value="">Select an organization</option>
+                  </select>
+                </label>
+                <p class="muted">Credential metadata and local cache state are isolated by both account and organization.</p>
+                <div class="inline-message" data-org-message aria-live="polite"></div>
+              </div>
+            </section>
+          </section>
+
+          <section id="api-keys" aria-labelledby="api-keys-heading">
+            <div class="page-heading">
+              <div>
+                <h2 id="api-keys-heading">API keys</h2>
+                <p>Customer-scoped credentials are stored and enforced by the customer API and auth service.</p>
+              </div>
+            </div>
+            <section class="panel" aria-labelledby="create-key-heading">
+              <div class="panel__header">
+                <h2 id="create-key-heading">Create API key</h2>
+                <span>secret shown once</span>
+              </div>
+              <form class="form-grid form-grid--inline" data-api-key-form>
+                <label><span>Name</span><input type="text" name="name" placeholder="Production checkout" required /></label>
+                <label>
+                  <span>Environment</span>
+                  <select name="environment"><option value="live">Live</option><option value="test">Test</option></select>
+                </label>
+                <label>
+                  <span>Scope</span>
+                  <select name="scope">
+                    <option value="requests:read">requests:read</option>
+                    <option value="requests:write">requests:write</option>
+                    <option value="locks:read">locks:read</option>
+                    <option value="locks:write">locks:write</option>
+                    <option value="kv:read">kv:read</option>
+                    <option value="kv:write">kv:write</option>
+                    <option value="services:read">services:read</option>
+                    <option value="services:write">services:write</option>
+                  </select>
+                </label>
+                <label class="checkbox-line"><input type="checkbox" name="require_idempotency" checked /><span>Require Idempotency-Key</span></label>
+                <button type="submit">Create key</button>
+              </form>
+              <div class="inline-message" data-api-key-message aria-live="polite"></div>
+            </section>
+            <section class="panel" aria-label="Customer API keys">
+              <div class="table-wrap">
+                <table data-api-keys-table>
+                  <thead><tr><th>Name</th><th>Prefix</th><th>Scopes</th><th>Last used</th><th>State</th><th>Action</th></tr></thead>
+                  <tbody><tr data-api-keys-loading><td colspan="6" class="muted">Sign in to load API keys.</td></tr></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section id="security" aria-labelledby="security-heading">
+            <div class="page-heading"><div><h2 id="security-heading">Security</h2><p>Step-up authentication and trusted customer sessions.</p></div></div>
+            <div class="panel-grid panel-grid--forms">
+              <section class="panel" aria-labelledby="mfa-heading">
+                <div class="panel__header"><h2 id="mfa-heading">Two-factor authentication</h2><span data-mfa-state>not enrolled</span></div>
+                <div class="panel-body stack">
+                  <button type="button" data-mfa-action="enroll-totp" data-requires-supabase>Enroll TOTP</button>
+                  <img class="mfa-qr" data-mfa-qr alt="TOTP QR code" hidden />
+                  <p class="mono secret-line" data-mfa-secret hidden></p>
+                  <label class="form-field"><span>Authenticator code</span><input type="text" inputmode="numeric" autocomplete="one-time-code" data-mfa-code data-requires-supabase /></label>
+                  <button type="button" data-mfa-action="verify-totp" data-requires-supabase>Verify 2FA</button>
+                  <div class="inline-message" data-mfa-message aria-live="polite"></div>
+                </div>
+              </section>
+              <section class="panel" aria-labelledby="passkey-heading">
+                <div class="panel__header"><h2 id="passkey-heading">Passkeys</h2><span>WebAuthn</span></div>
+                <div class="panel-body stack">
+                  <p class="muted">Register a passkey after signing in.</p>
+                  <button type="button" data-passkey-action="register" data-requires-supabase>Register passkey</button>
+                </div>
+              </section>
+            </div>
+            <section class="panel" aria-labelledby="sessions-heading">
+              <div class="panel__header"><h2 id="sessions-heading">Trusted sessions</h2><span>customer only</span></div>
+              <div class="table-wrap">
+                <table data-security-sessions-table>
+                  <thead><tr><th>Device</th><th>Location</th><th>Last seen</th><th>State</th><th>Action</th></tr></thead>
+                  <tbody><tr data-security-sessions-loading><td colspan="5" class="muted">Sign in to load sessions.</td></tr></tbody>
+                </table>
+              </div>
+            </section>
+          </section>
+
+          <section id="settings" aria-labelledby="settings-heading">
+            <div class="page-heading"><div><h2 id="settings-heading">Settings</h2><p>Preferences belong to the signed-in customer, never the admin plane.</p></div></div>
+            <section class="panel">
+              <form class="settings-grid" data-preference-form>
+                <label class="form-field"><span>Default region</span><select name="region"><option value="auto">auto</option><option value="iad1">iad1</option><option value="sfo1">sfo1</option><option value="ams1">ams1</option><option value="fra1">fra1</option><option value="sin1">sin1</option><option value="syd1">syd1</option></select></label>
+                <label class="form-field"><span>Timezone</span><select name="timezone"><option value="browser">Browser default</option><option value="utc">UTC</option><option value="america-lima">America/Lima</option></select></label>
+                <label class="form-field"><span>Density</span><select name="density"><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
+                <fieldset class="toggle-group">
+                  <legend>Notifications</legend>
+                  <label class="checkbox-line"><input type="checkbox" name="notify_lock_contention" checked /><span>Lock contention</span></label>
+                  <label class="checkbox-line"><input type="checkbox" name="notify_key_rotation" checked /><span>API key rotation</span></label>
+                  <label class="checkbox-line"><input type="checkbox" name="notify_mfa" checked /><span>2FA changes</span></label>
+                </fieldset>
+                <button type="submit">Save preferences</button>
+              </form>
+              <div class="inline-message" data-preference-message aria-live="polite"></div>
+            </section>
+          </section>
+
+          <section id="events" class="panel" aria-labelledby="events-heading">
+            <div class="panel__header"><h2 id="events-heading">Realtime events</h2><span>customer plane</span></div>
+            <div id="realtime-events" class="event-stream" aria-live="polite"><div class="empty-state">Waiting for customer-scoped updates.</div></div>
+          </section>
         </section>
       </main>
     </div>

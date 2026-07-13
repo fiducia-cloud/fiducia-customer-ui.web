@@ -1,81 +1,131 @@
 # fiducia-customer-ui.web
 
-HTMX customer portal assets for `fiducia-backend.rs`.
+The independently deployable customer web application for Fiducia. It owns the
+customer login, signup, account security, API-key, session, preference, and
+customer realtime experiences. It does not contain admin routes or admin-plane
+credentials. Its complete Vite `dist/` can run at the customer hostname; during
+migration, `fiducia-backend.rs` may also serve the same bundle inside its
+customer-only shell. Neither mode shares routes, cookies, browser storage, or
+UI code with `fiducia-admin.rs`.
 
-The backend renders the portal shell with Axum + Maud and serves this Vite build
-from `CUSTOMER_STATIC_DIR`:
+## Authentication boundary
+
+The browser signs in with the configured Supabase project and receives a normal
+Supabase access token. The portal then:
+
+1. verifies the token with `fiducia-auth` `GET /v1/me` when `authBase` is set;
+2. sends that bearer token to the customer API for every protected request; and
+3. relies on the customer API to verify the same identity through
+   `fiducia-auth` and scope data to the caller's organization.
+
+The Supabase anon key is browser-public. Never put a Supabase service-role key,
+an internal service secret, or an admin credential in this app.
+
+## Run and build
 
 ```sh
-npm install
+npm ci
+npm run check
+npm run dev
 npm run build
-CUSTOMER_STATIC_DIR=../fiducia-customer-ui.web/dist cargo run
 ```
 
-`app.fiducia.cloud` should route to `fiducia-backend.rs`. Requests with
-`Host: app.fiducia.cloud` render the portal at `/`; the same portal is always
-available at `/app`.
+`dist/` is a complete static site containing `index.html`, `config.js`, and the
+versioned application assets. The included Dockerfile serves it with nginx.
 
-## Shared Interfaces
+## Customer contracts
 
-The UI imports typed contracts from the local interface package:
+The UI declares only its sanitized customer-facing response shapes and the
+local `@fiducia/sync` browser-store surface. Cluster/operator interface types are
+not dependencies of the customer bundle.
 
-```ts
-import type { LockGrant, KvGetResponse } from "@fiducia/interfaces/typescript";
+## Runtime configuration
+
+Deployments replace `/config.js` without rebuilding the image:
+
+```js
+window.FIDUCIA_CUSTOMER_CONFIG = {
+  apiBase: "https://api.fiducia.cloud",
+  authBase: "https://auth.fiducia.cloud",
+  backendEventsPath: "/app/events",
+  backendWsPath: "/app/ws",
+  customerHost: "app.fiducia.cloud",
+  supabaseUrl: "https://example.supabase.co",
+  supabaseAnonKey: "public-anon-key",
+  syncModuleUrl: ""
+};
 ```
 
-The dependency is local in `package.json`:
+`apiBase` controls HTTP, WebSocket, and SSE traffic, so the static app and API
+may run on different origins. `authBase` enables the explicit browser-side
+`/v1/me` verification. Both services must allow the customer origin through
+their CORS policy.
 
-```json
-"@fiducia/interfaces": "file:../fiducia-interfaces"
-```
+`syncModuleUrl` is optional. When supplied, the portal loads the local-first
+sync SDK as a runtime enhancement. A missing SDK never blocks the build or the
+authoritative customer API fallback.
 
-## Realtime
+The old backend-rendered shell remains compatible with `assets/customer.js` and
+`assets/customer.css` during migration, but new deployments should serve this
+repo's `dist/` directly at the customer hostname.
 
-If these variables are provided to `fiducia-backend.rs`, the rendered portal
-passes them to the browser and subscribes through Supabase realtime. That is the
-browser's single Supabase WebSocket:
+## Supabase Auth and refresh transport
 
-- `SUPABASE_URL`
-- `SUPABASE_ANON_KEY`
+The UI uses only customer-safe response shapes. Network payloads and auth
+behavior remain defined by the customer BFF and `fiducia-auth`; presentation
+and deployment remain isolated from `fiducia-admin.rs`.
 
-The current client listens for changes on:
-
-- `public.fiducia_locks`
-- `public.fiducia_requests`
-- `public.fiducia_kv`
-- `public.fiducia_services`
-
-The browser also opens one non-sensitive heartbeat stream to
+The browser opens one non-sensitive heartbeat stream to
 `fiducia-backend.rs`:
 
 - WebSocket: `/app/ws`
 - SSE fallback: `/app/events`
 
-The backend stream carries generic refresh frames and rendered public shell
+The backend stream carries generic refresh frames and customer-shell summary
 fragments only; it never transports customer rows or API-key metadata. Customer
-records reconcile through authenticated catch-up requests or Supabase RLS.
-IndexedDB databases are namespaced by the authenticated Supabase user so one
-browser account cannot render another account's cached rows. The manual refresh
-button and `fiducia:refresh` HTMX event remain available as fallback paths.
+API-key records reconcile only through authenticated catch-up requests. The
+browser does not subscribe to Postgres changes directly: row-level security
+cannot hide server-only columns such as secret hashes, and cluster-wide locks,
+requests, KV, and service discovery belong only in the operator admin app.
+IndexedDB databases are namespaced by the authenticated Supabase user and the
+explicitly selected, verified organization, so neither another browser account
+nor another tenant can render cached rows. Local preference fallbacks are also
+namespaced by the authenticated user. The manual refresh button and
+`fiducia:refresh` HTMX event remain available as fallback paths.
+
+## Tests
+
+`npm run test:browser` exercises the standalone customer app against a local API
+fixture and browser-level sanitized BFF mocks. Real auth/KV integration belongs
+to the `fiducia-auth.rs` contract suite, not a customer-Postgres fixture.
+
+`fiducia-auth` is the sole API-key authority. The customer BFF verifies the
+Supabase bearer, verifies the explicit organization selection, forwards
+create/list/rotate/revoke operations plus mutation idempotency keys to that
+service, and returns only the sanitized customer display contract. The browser
+never writes credential rows directly.
 
 ## Security posture
 
-- **Client-safe vs server-only secrets.** Only `SUPABASE_URL` and
-  `SUPABASE_ANON_KEY` reach the browser — the anon key is designed to be public
-  and is guarded by Supabase Row Level Security. The `SUPABASE_SERVICE_ROLE` key
-  is **server-only** and must never be shipped to the client or placed in
-  `FIDUCIA_CUSTOMER_CONFIG`. `npm audit --omit=dev` reports 0 vulnerabilities.
-- **Config injection is not XSS-able from the client.** The portal reads
-  `window.FIDUCIA_CUSTOMER_CONFIG` as a structured object merged over defaults;
-  its values are never interpolated into HTML. (The backend that serializes that
-  object into the inline `<script>` owns escaping it safely.)
+- **Client-safe vs server-only secrets.** Only the Supabase URL and anon key
+  reach the browser. Supabase Row Level Security guards the public anon key. A
+  service-role key is server-only and must never appear in `config.js`.
+- **Per-user and per-org local state.** Optional IndexedDB databases are
+  namespaced by the verified Supabase user and selected organization and closed
+  whenever either changes. Preference fallbacks are user-namespaced. One
+  account or tenant cannot render another account's cached customer state.
+- **Authenticated reconciliation.** Customer records reconcile through bearer-
+  authenticated catch-up requests or Supabase RLS. The backend WS/SSE channel is
+  only a heartbeat/refresh signal and never transports API-key rows.
+- **Structured runtime config.** The portal consumes
+  `window.FIDUCIA_CUSTOMER_CONFIG` as data and never interpolates its values into
+  HTML.
 - **Stream fragments are trusted, server-rendered HTML.** The single
   `applyStreamFragments()` `innerHTML` sink consumes HTML fragments rendered by
-  `fiducia-backend.rs` (Axum + Maud) over the authenticated same-origin panel
-  stream — the backend is the escaping boundary; the stream never carries
-  customer rows or API-key metadata. All customer/API-key values render through
-  `textContent`/`createElement`, never `innerHTML`.
+  the customer backend through Maud; that service is the escaping boundary. All
+  customer/API-key values render through `textContent`/`createElement`.
 - **HTTP security headers** (CSP, `X-Content-Type-Options`,
-  `X-Frame-Options`/`frame-ancestors`, `Referrer-Policy`) and cookie flags
-  (`HttpOnly`/`Secure`/`SameSite` on the backend session cookie) are set by
-  `fiducia-backend.rs`; this Vite build ships no cookies of its own.
+  `X-Frame-Options`/`frame-ancestors`, `Referrer-Policy`) are set by the static
+  hosting edge or by `fiducia-backend.rs` in compatibility mode. This SPA ships
+  no application cookies; Supabase browser storage and bearer tokens remain
+  isolated from the admin app's HttpOnly cookie.

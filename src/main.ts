@@ -965,12 +965,7 @@ function bindPreferenceControls() {
 
 async function savePreferences(form: HTMLFormElement) {
   const preferences = readPreferenceForm(form);
-  const userId = activeSyncUserId;
-  if (!userId) {
-    setPreferenceMessage("Sign in before saving preferences.");
-    return;
-  }
-  const storageKey = preferenceStorageKey(userId);
+  const storageKey = preferenceStorageKey(activeSyncUserId ?? null);
 
   try {
     setPreferenceMessage("Saving preferences...");
@@ -1114,9 +1109,6 @@ function hydratePreferencesForUser(userId: string | null) {
 
 function hydratePreferences(form: HTMLFormElement, userId: string | null) {
   form.reset();
-  if (!userId) {
-    return;
-  }
   const storageKey = preferenceStorageKey(userId);
   const raw = window.localStorage.getItem(storageKey);
   if (!raw) {
@@ -1136,8 +1128,9 @@ function hydratePreferences(form: HTMLFormElement, userId: string | null) {
   }
 }
 
-function preferenceStorageKey(userId: string) {
-  return `fiducia.customer.preferences.${userId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
+function preferenceStorageKey(userId: string | null) {
+  const subject = userId?.replace(/[^a-zA-Z0-9_-]/g, "_") ?? "anonymous";
+  return `fiducia.customer.preferences.${subject}`;
 }
 
 function setSelectValue(form: HTMLFormElement, name: string, value: unknown) {

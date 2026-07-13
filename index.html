@@ -124,6 +124,23 @@
               </div>
               <div class="inline-message" data-auth-message aria-live="polite"></div>
             </section>
+
+            <section class="panel" aria-labelledby="organization-heading" data-org-panel hidden>
+              <div class="panel__header">
+                <h2 id="organization-heading">Organization</h2>
+                <span>verified membership</span>
+              </div>
+              <div class="panel-body stack">
+                <label class="form-field">
+                  <span>Active organization</span>
+                  <select data-org-select disabled>
+                    <option value="">Select an organization</option>
+                  </select>
+                </label>
+                <p class="muted">Credential metadata and local cache state are isolated by both account and organization.</p>
+                <div class="inline-message" data-org-message aria-live="polite"></div>
+              </div>
+            </section>
           </section>
 
           <section id="api-keys" aria-labelledby="api-keys-heading">

@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { chromium } from "playwright";
+import { installPlaywrightCustomerApiMock } from "./customer-api-mock.mjs";
 import { chromeExecutablePath, startCustomerPortal } from "./customer-browser-harness.mjs";
 
 test("playwright drives API keys and preferences through the customer portal", async (t) => {
@@ -19,6 +20,7 @@ test("playwright drives API keys and preferences through the customer portal", a
   const page = await browser.newPage({ viewport: { height: 900, width: 1440 } });
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  await installPlaywrightCustomerApiMock(page);
 
   await page.goto(`${server.url}/app`, { waitUntil: "networkidle" });
   await assertVisibleText(page, "Customer workspace");
@@ -33,12 +35,15 @@ test("playwright drives API keys and preferences through the customer portal", a
   await assertVisibleText(page, "Playwright issued key");
 
   await page.getByRole("row", { name: /Playwright issued key/ }).getByRole("button", { name: "Rotate" }).click();
-  await assertVisibleText(page, "rotated with 900s overlap");
+  await assertVisibleText(page, "rotated with 60s overlap");
+
+  await page.getByRole("row", { name: /Playwright issued key/ }).getByRole("button", { name: "Revoke" }).click();
+  await assertVisibleText(page, "revoked.");
+  await assertVisibleText(page, "revoked");
 
   await page.getByRole("link", { name: /Security/ }).click();
   const safariRow = page.getByRole("row", { name: /Safari on iPhone/ });
-  await safariRow.getByRole("button", { name: "Revoke" }).click();
-  await assertVisibleText(page, "Revoked");
+  await safariRow.getByText("Provider managed").waitFor({ state: "visible" });
 
   await page.getByRole("link", { name: /Settings/ }).click();
   await page.getByLabel("Density").selectOption("compact");
@@ -61,6 +66,7 @@ test("playwright verifies password, passkey, and 2FA controls share Supabase gat
   const page = await browser.newPage({ viewport: { height: 900, width: 1440 } });
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  await installPlaywrightCustomerApiMock(page);
 
   await page.goto(`${server.url}/app/auth`, { waitUntil: "networkidle" });
   await assertVisibleText(page, "Login");

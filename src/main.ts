@@ -1,19 +1,12 @@
 // Entry point for the Fiducia customer portal browser bundle: wires Supabase auth
 // (password/passkey/2FA), the api_keys local-first sync vertical, preferences and
-// session controls, and the backend WS/SSE + Supabase realtime event streams into
-// the independently deployed customer SPA (and the legacy backend-rendered
-// compatibility shell during migration).
+// session controls, and a non-sensitive backend WS/SSE refresh signal into the
+// independently deployed customer SPA (and the legacy backend-rendered
+// compatibility shell during migration). Operator data never enters this app.
 import "./styles.css";
 import htmx from "htmx.org";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
-import type { SyncChange, SyncClient, SyncQueue, SyncStore } from "@fiducia/sync";
-import type {
-  ElectionGetResponse,
-  KvGetResponse,
-  LockGrant,
-  ProposeOutcome,
-  ServiceListResponse
-} from "@fiducia/interfaces/typescript";
+import type { SyncClient, SyncQueue, SyncStore } from "@fiducia/sync";
 
 type FiduciaRegion =
   | "auto"
@@ -43,7 +36,7 @@ type CustomerApiKey = {
   scopes: string;
   last_used: string;
   status: string;
-  // Assigned by the authoritative customer Postgres row.
+  // Assigned by the authoritative fiducia-auth key record.
   id: string;
   version: number;
 };
@@ -68,9 +61,26 @@ type CreateApiKeyResponse = {
 
 type RotateApiKeyResponse = {
   ok: boolean;
+  api_key?: CustomerApiKey;
   error?: string;
   overlap_seconds?: number;
   prefix?: string;
+  replacement_secret?: string;
+};
+
+type RevokeApiKeyResponse = {
+  error?: string;
+  ok: boolean;
+  prefix?: string;
+  status?: string;
+};
+
+type CustomerContextResponse = {
+  user: {
+    email?: string;
+    orgs: string[];
+    user_id: string;
+  };
 };
 
 type CustomerPreferences = {
@@ -108,44 +118,7 @@ type RevokeSessionResponse = {
   status?: string;
 };
 
-type LockEvent = {
-  kind: "lock";
-  key: string;
-  tenant: string;
-  region: FiduciaRegion;
-  grant: LockGrant;
-  outcome?: ProposeOutcome;
-};
-
-type RequestEvent = {
-  kind: "request";
-  path: string;
-  method: string;
-  shard: number;
-  region: FiduciaRegion;
-  status: "committed" | "redirected" | "rejected";
-  outcome?: ProposeOutcome;
-};
-
-type KvEvent = {
-  kind: "kv";
-  key: string;
-  response: KvGetResponse;
-};
-
-type ServiceEvent = {
-  kind: "service";
-  response: ServiceListResponse;
-};
-
-type LeadershipEvent = {
-  kind: "leadership";
-  response: ElectionGetResponse;
-};
-
-type PortalEvent = LockEvent | RequestEvent | KvEvent | ServiceEvent | LeadershipEvent;
-
-type StreamFragments = Partial<Record<"summary" | "locks" | "requests" | "kv" | "services", string>>;
+type StreamFragments = Partial<Record<"summary", string>>;
 
 type BackendStreamMessage = {
   kind: "connected" | "refresh" | "pong";
@@ -183,11 +156,13 @@ const config = {
 const supabaseClient = createSupabaseCustomerClient(config);
 const statusEl = document.querySelector<HTMLElement>("[data-supabase-status]");
 const backendStatusEl = document.querySelector<HTMLElement>("[data-backend-stream-status]");
-const eventsEl = document.querySelector<HTMLElement>("#realtime-events");
 const freshnessEls = document.querySelectorAll<HTMLElement>("[data-freshness-clock]");
 const authStatusEls = document.querySelectorAll<HTMLElement>("[data-auth-status]");
 const authEmailEls = document.querySelectorAll<HTMLElement>("[data-auth-email]");
 const authMessageEl = document.querySelector<HTMLElement>("[data-auth-message]");
+const orgPanelEl = document.querySelector<HTMLElement>("[data-org-panel]");
+const orgSelectEl = document.querySelector<HTMLSelectElement>("[data-org-select]");
+const orgMessageEl = document.querySelector<HTMLElement>("[data-org-message]");
 const apiKeyMessageEl = document.querySelector<HTMLElement>("[data-api-key-message]");
 const preferenceMessageEl = document.querySelector<HTMLElement>("[data-preference-message]");
 const mfaMessageEl = document.querySelector<HTMLElement>("[data-mfa-message]");
@@ -196,14 +171,9 @@ const mfaQrEl = document.querySelector<HTMLImageElement>("[data-mfa-qr]");
 const mfaSecretEl = document.querySelector<HTMLElement>("[data-mfa-secret]");
 const mfaCodeEl = document.querySelector<HTMLInputElement>("[data-mfa-code]");
 const streamTargets: Record<keyof StreamFragments, string> = {
-  summary: "#summary",
-  locks: "#locks-panel",
-  requests: "#requests-panel",
-  kv: "#kv-panel",
-  services: "#services-panel"
+  summary: "#summary"
 };
 
-let backendStreamReady = false;
 let pendingMfaFactorId: string | null = null;
 
 // The local-first api_keys sync handle. Null until (and unless) the wasm reconcile
@@ -211,6 +181,8 @@ let pendingMfaFactorId: string | null = null;
 type ApiKeySyncHandle = { store: SyncStore; client: SyncClient };
 let apiKeySync: ApiKeySyncHandle | null = null;
 let activeSyncUserId: string | null | undefined;
+let activeSyncOrgId: string | null = null;
+let availableOrgIds: string[] = [];
 let syncGeneration = 0;
 
 type SyncModule = {
@@ -218,22 +190,17 @@ type SyncModule = {
   makeQueue(store: SyncStore): SyncQueue;
   makeSyncClient(deps: { store: SyncStore; queue: SyncQueue; core: unknown }): SyncClient;
   openStore(dbName: string, tables: string[]): Promise<SyncStore>;
-  subscribeSupabase(options: {
-    client: SupabaseClient;
-    tables: string[];
-    onChange: (change: SyncChange) => void;
-  }): { stop(): void };
 };
 
 setBackendStatus("connecting");
-setRealtimeStatus(supabaseClient ? "connecting" : "offline");
+setRealtimeStatus(supabaseClient ? "configured" : "offline");
 initializeAuth(supabaseClient);
+bindOrganizationControls();
 bindApiKeyControls();
 bindPreferenceControls();
 bindSecuritySessionControls();
 startFreshnessClock();
 startBackendStream(config);
-startRealtime(supabaseClient);
 
 document.body.addEventListener("htmx:afterSwap", (event) => {
   const target = event.target;
@@ -331,9 +298,13 @@ async function activateCustomerSession(session: Session | null) {
   }
 
   activeSyncUserId = nextUserId;
-  const generation = ++syncGeneration;
+  activeSyncOrgId = null;
+  availableOrgIds = [];
+  ++syncGeneration;
   apiKeySync?.store.close();
   apiKeySync = null;
+  configureOrganizationSelector(nextUserId, []);
+  hydratePreferencesForUser(nextUserId);
 
   const body = apiKeyTableBody();
   if (body) {
@@ -344,10 +315,96 @@ async function activateCustomerSession(session: Session | null) {
     return;
   }
 
-  await setupApiKeySync(nextUserId, generation);
+  try {
+    const context = await getJson<CustomerContextResponse>("/api/customer/context");
+    const orgs = Array.from(
+      new Set(context.user.orgs.filter((orgId) => typeof orgId === "string" && orgId.trim()))
+    );
+    configureOrganizationSelector(nextUserId, orgs);
+    const selected = preferredOrganization(nextUserId, orgs);
+    if (selected) {
+      if (orgSelectEl) {
+        orgSelectEl.value = selected;
+      }
+      await switchCustomerOrganization(selected);
+    } else {
+      setApiKeyMessage("Select an organization to load customer API keys.");
+    }
+  } catch (error) {
+    setOrgMessage(errorMessage(error));
+    setApiKeyMessage("Could not load verified organization membership.");
+  }
+}
+
+function bindOrganizationControls() {
+  orgSelectEl?.addEventListener("change", () => {
+    void switchCustomerOrganization(orgSelectEl.value);
+  });
+}
+
+function configureOrganizationSelector(userId: string | null, orgs: string[]) {
+  availableOrgIds = orgs;
+  if (!orgPanelEl || !orgSelectEl) {
+    return;
+  }
+  orgPanelEl.hidden = !userId;
+  orgSelectEl.textContent = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = orgs.length ? "Select an organization" : "No organizations available";
+  orgSelectEl.append(placeholder);
+  for (const orgId of orgs) {
+    const option = document.createElement("option");
+    option.value = orgId;
+    option.textContent = orgId;
+    orgSelectEl.append(option);
+  }
+  orgSelectEl.disabled = !orgs.length;
+  setOrgMessage(
+    orgs.length > 1
+      ? "Choose the organization whose credentials you want to manage."
+      : orgs.length === 1
+        ? "Organization membership verified."
+        : userId
+          ? "No verified organization membership."
+          : ""
+  );
+}
+
+function preferredOrganization(userId: string, orgs: string[]) {
+  if (orgs.length === 1) {
+    return orgs[0];
+  }
+  const saved = window.localStorage.getItem(organizationStorageKey(userId));
+  return saved && orgs.includes(saved) ? saved : null;
+}
+
+async function switchCustomerOrganization(orgId: string) {
+  const userId = activeSyncUserId;
+  if (!userId || !availableOrgIds.includes(orgId)) {
+    activeSyncOrgId = null;
+    setOrgMessage(orgId ? "That organization is not in the verified membership list." : "Select an organization.");
+    return;
+  }
+
+  const generation = ++syncGeneration;
+  apiKeySync?.store.close();
+  apiKeySync = null;
+  activeSyncOrgId = orgId;
+  window.localStorage.setItem(organizationStorageKey(userId), orgId);
+  const body = apiKeyTableBody();
+  if (body) {
+    body.textContent = "";
+  }
+  setOrgMessage(`Using organization ${orgId}.`);
+  await setupApiKeySync(userId, orgId, generation);
   if (generation === syncGeneration) {
     await hydrateApiKeys();
   }
+}
+
+function organizationStorageKey(userId: string) {
+  return `fiducia.customer.organization.${userId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 }
 
 function bindAuthForms(client: SupabaseClient | null) {
@@ -485,6 +542,7 @@ function renderAuthSession(session: Session | null, verification?: "verifying" |
   const label = verification ?? (signedIn ? "signed in" : "signed out");
   const email = session?.user.email ?? "No customer signed in";
   document.body.dataset.authenticated = signedIn ? "true" : "false";
+  setRealtimeStatus(signedIn ? "authenticated" : supabaseClient ? "configured" : "offline");
 
   authStatusEls.forEach((el) => {
     el.textContent = label;
@@ -643,29 +701,40 @@ function bindApiKeyControls() {
     void createApiKey(form);
   });
 
-  document.querySelectorAll<HTMLButtonElement>("[data-api-key-action='rotate']").forEach((button) => {
+  document.querySelectorAll<HTMLButtonElement>("[data-api-key-action]").forEach((button) => {
     button.addEventListener("click", () => {
       const prefix = button.dataset.keyPrefix ?? "selected key";
-      void rotateApiKey(prefix, button);
+      if (button.dataset.apiKeyAction === "revoke") {
+        void revokeApiKey(prefix, button);
+      } else {
+        void rotateApiKey(prefix, button);
+      }
     });
   });
 }
 
 // Bring up the @fiducia/sync stack for api_keys: the wasm reconcile core, a
-// per-plane IndexedDB store, the sync client, and the backend WS/SSE subscription
-// that folds committed `fiducia:sync` changes into the store. Best-effort: any
-// failure (no wasm, no IndexedDB) leaves `apiKeySync` null and the view falls back
-// to the plain fetch path, so the portal degrades gracefully and never throws.
-async function setupApiKeySync(userId: string, generation: number): Promise<void> {
+// per-user IndexedDB store, and the sync client. Authoritative rows arrive only
+// through the authenticated customer catch-up API. We deliberately do not
+// subscribe the browser to raw api_keys CDC: RLS filters rows, not columns, and
+// the database record contains server-only fields that are not part of the
+// customer display contract. Best-effort: any failure (no wasm, no IndexedDB)
+// leaves `apiKeySync` null and the view falls back to the plain fetch path.
+async function setupApiKeySync(userId: string, orgId: string, generation: number): Promise<void> {
   if (!config.syncModuleUrl) {
     return;
   }
 
   try {
-    const sync = (await import(/* @vite-ignore */ config.syncModuleUrl)) as SyncModule;
+    const moduleUrl = new URL(config.syncModuleUrl, window.location.origin);
+    if (moduleUrl.origin !== window.location.origin) {
+      throw new Error("sync module must be served from the customer application origin");
+    }
+    const sync = (await import(/* @vite-ignore */ moduleUrl.href)) as SyncModule;
     const core = await sync.loadBrowserCore();
     const safeUserId = userId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const store = await sync.openStore(`fiducia-customer-${safeUserId}`, ["api_keys"]);
+    const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const store = await sync.openStore(`fiducia-customer-${safeUserId}-${safeOrgId}`, ["api_keys"]);
     if (generation !== syncGeneration) {
       store.close();
       return;
@@ -673,20 +742,6 @@ async function setupApiKeySync(userId: string, generation: number): Promise<void
     const queue = sync.makeQueue(store);
     const client = sync.makeSyncClient({ store, queue, core });
     apiKeySync = { store, client };
-
-    // Supabase realtime is tenant-filtered by RLS and folded into the same
-    // reconcile client. The public backend heartbeat stream never carries rows.
-    // Requires the synced tables to be in the supabase_realtime publication +
-    // REPLICA IDENTITY FULL (see fiducia-interfaces sql/customer.sql).
-    if (supabaseClient) {
-      sync.subscribeSupabase({
-        client: supabaseClient,
-        tables: ["api_keys"],
-        onChange: (change) => {
-          void applyApiKeyChanges([change]);
-        }
-      });
-    }
   } catch (error) {
     apiKeySync = null;
     console.debug("api_keys sync unavailable; using fetch fallback:", errorMessage(error));
@@ -715,31 +770,6 @@ async function fetchApiKeyCatchup(): Promise<CustomerApiKey[] | null> {
   }
 }
 
-// Fold committed changes (from the backend WS/SSE) into the local store, then
-// re-render the table from the store. Guarded so a bad frame never surfaces as a
-// page error.
-async function applyApiKeyChanges(changes: SyncChange[]) {
-  if (!apiKeySync) {
-    return;
-  }
-
-  try {
-    let touched = false;
-    for (const change of changes) {
-      if (change?.table !== "api_keys") {
-        continue;
-      }
-      await apiKeySync.client.applyChange(change);
-      touched = true;
-    }
-    if (touched) {
-      await renderApiKeysFromStore();
-    }
-  } catch (error) {
-    console.debug("applying api_keys changes failed:", errorMessage(error));
-  }
-}
-
 // Render the table straight from IndexedDB (the local-first source of truth).
 // Returns false when there is nothing stored yet, so callers can fall back.
 async function renderApiKeysFromStore(): Promise<boolean> {
@@ -765,9 +795,8 @@ async function renderApiKeysFromStore(): Promise<boolean> {
   return true;
 }
 
-// Cold-start / reconnect catch-up. Runs on initial load and on every WS reconnect
-// so changes that landed while this client was away show up immediately. Reentry
-// is guarded (the initial call can race the first WS "open").
+// Cold-start / reconnect hydration. The BFF returns a complete sanitized
+// fiducia-auth snapshot; `prune: true` removes clean local rows absent from it.
 async function hydrateApiKeys() {
   const body = apiKeyTableBody();
   if (!body || hydratingApiKeys) {
@@ -776,10 +805,7 @@ async function hydrateApiKeys() {
   hydratingApiKeys = true;
 
   try {
-    // Local-first: reconcile the authoritative snapshot from the INDEXED catch-up
-    // endpoint THROUGH the sync client. Unlike a raw store.put seed this goes via
-    // reconcile — so un-acked optimistic edits survive, and `prune: true` drops
-    // rows deleted server-side while we were away.
+    // Local-first: reconcile the authoritative snapshot through the sync client.
     if (apiKeySync) {
       const rows = await fetchApiKeyCatchup();
       if (rows) {
@@ -791,7 +817,7 @@ async function hydrateApiKeys() {
       }
     }
 
-    // If local sync is unavailable, render the same authoritative Postgres rows
+    // If local sync is unavailable, render the same authoritative auth metadata
     // directly from the list endpoint.
     const listed = await getJson<ApiKeyListResponse>("/api/customer/api-keys");
     body.textContent = "";
@@ -815,27 +841,24 @@ async function createApiKey(form: HTMLFormElement) {
     setApiKeyMessage("Creating API key...");
     // The create endpoint mints + shows the secret once (and, DB-backed, persists
     // the row + returns its id/version).
-    const created = await postJson<CreateApiKeyResponse>("/api/customer/api-keys", {
-      environment,
-      name,
-      require_idempotency: requiresIdempotency,
-      scope
-    });
+    const created = await postJson<CreateApiKeyResponse>(
+      "/api/customer/api-keys",
+      {
+        environment,
+        name,
+        require_idempotency: requiresIdempotency,
+        scope
+      },
+      mutationIdempotencyKey("create-key")
+    );
 
     if (!created.ok || !created.api_key) {
       throw new Error(created.error ?? "api_key_create_failed");
     }
 
     const key = created.api_key;
-    // Creation is server-led: the create endpoint already minted the row (version 1),
-    // persisted it, and broadcast a `fiducia:sync` frame. So creation must NOT go
-    // through optimisticWrite — that would upsert + broadcast a *second* time (the
-    // create double-write). Instead, write the returned authoritative row
-    // straight into the local store as clean: the server-assigned
-    // version, not dirty, and with no durable-queue entry. Then re-render from the
-    // store. optimisticWrite stays reserved for future EDITS (rename, scope changes),
-    // where the client leads the write. If the local sync stack is unavailable,
-    // render the authoritative returned row directly.
+    // Creation is server-led by fiducia-auth. Store the returned sanitized row as
+    // clean; the browser never writes the credential table directly.
     let rendered = false;
     if (apiKeySync) {
       try {
@@ -865,24 +888,69 @@ async function rotateApiKey(prefix: string, button: HTMLButtonElement) {
   try {
     button.disabled = true;
     setApiKeyMessage(`Rotating ${prefix}...`);
-    const rotated = await postJson<RotateApiKeyResponse>("/api/customer/api-keys/rotate", { prefix });
+    const rotated = await postJson<RotateApiKeyResponse>(
+      "/api/customer/api-keys/rotate",
+      { prefix },
+      mutationIdempotencyKey(`rotate-${prefix}`)
+    );
 
     if (!rotated.ok) {
       throw new Error(rotated.error ?? "api_key_rotation_failed");
     }
 
-    const row = button.closest("tr");
-    const status = row?.querySelector<HTMLElement>("[data-api-key-status]");
-    if (status) {
-      status.textContent = "rotated";
-      status.className = "tag tag--ok";
+    if (rotated.api_key && apiKeySync) {
+      await apiKeySync.store.put("api_keys", rotated.api_key.id, rotated.api_key, {
+        version: rotated.api_key.version,
+        dirty: false
+      });
+      await renderApiKeysFromStore();
+    } else if (rotated.api_key) {
+      const row = button.closest("tr");
+      row?.replaceWith(buildApiKeyRow(rotated.api_key));
     }
 
-    setApiKeyMessage(`${prefix} rotated with ${rotated.overlap_seconds ?? 900}s overlap.`);
+    const replacement = rotated.replacement_secret
+      ? ` New secret (shown once): ${rotated.replacement_secret}.`
+      : "";
+    setApiKeyMessage(
+      `${prefix} rotated with ${rotated.overlap_seconds ?? 0}s overlap.${replacement}`
+    );
   } catch (error) {
     setApiKeyMessage(errorMessage(error));
   } finally {
     button.disabled = false;
+  }
+}
+
+async function revokeApiKey(prefix: string, button: HTMLButtonElement) {
+  try {
+    button.disabled = true;
+    setApiKeyMessage(`Revoking ${prefix}...`);
+    const revoked = await postJson<RevokeApiKeyResponse>(
+      "/api/customer/api-keys/revoke",
+      { prefix },
+      mutationIdempotencyKey(`revoke-${prefix}`)
+    );
+    if (!revoked.ok) {
+      throw new Error(revoked.error ?? "api_key_revoke_failed");
+    }
+    if (apiKeySync) {
+      await hydrateApiKeys();
+    } else {
+      const row = button.closest("tr");
+      const status = row?.querySelector<HTMLElement>("[data-api-key-status]");
+      if (status) {
+        status.textContent = "revoked";
+        status.className = "tag tag--error";
+      }
+      row?.querySelector<HTMLElement>("[data-api-key-actions]")?.replaceChildren(
+        sessionMutedAction("Revoked")
+      );
+    }
+    setApiKeyMessage(`${prefix} revoked.`);
+  } catch (error) {
+    button.disabled = false;
+    setApiKeyMessage(errorMessage(error));
   }
 }
 
@@ -892,7 +960,7 @@ function bindPreferenceControls() {
     return;
   }
 
-  hydratePreferences(form);
+  hydratePreferences(form, null);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     void savePreferences(form);
@@ -901,6 +969,7 @@ function bindPreferenceControls() {
 
 async function savePreferences(form: HTMLFormElement) {
   const preferences = readPreferenceForm(form);
+  const storageKey = preferenceStorageKey(activeSyncUserId ?? null);
 
   try {
     setPreferenceMessage("Saving preferences...");
@@ -909,10 +978,10 @@ async function savePreferences(form: HTMLFormElement) {
       throw new Error(saved.error ?? "preferences_save_failed");
     }
 
-    window.localStorage.setItem("fiducia.customer.preferences", JSON.stringify(saved.preferences));
+    window.localStorage.setItem(storageKey, JSON.stringify(saved.preferences));
     setPreferenceMessage("Preferences saved.");
   } catch (error) {
-    window.localStorage.setItem("fiducia.customer.preferences", JSON.stringify(preferences));
+    window.localStorage.setItem(storageKey, JSON.stringify(preferences));
     setPreferenceMessage(`${errorMessage(error)} Local preference fallback saved.`);
   }
 }
@@ -955,7 +1024,7 @@ async function hydrateSecuritySessions() {
   try {
     const listed = await getJson<SessionListResponse>("/api/customer/security/sessions");
     body.textContent = "";
-    listed.sessions.forEach((session) => appendSecuritySessionRow(session));
+    listed.sessions.forEach((session) => appendSecuritySessionRow(session, listed.revoke_supported));
   } catch {
     // Keep the server-rendered fallback rows if the JSON endpoint is unavailable.
   }
@@ -986,7 +1055,7 @@ async function revokeSecuritySession(device: string, button: HTMLButtonElement) 
   }
 }
 
-function appendSecuritySessionRow(session: CustomerSession) {
+function appendSecuritySessionRow(session: CustomerSession, revokeSupported: boolean) {
   const body = securitySessionTableBody();
   if (!body) {
     return;
@@ -998,7 +1067,7 @@ function appendSecuritySessionRow(session: CustomerSession) {
     tableCell(session.location),
     tableCell(session.last_seen),
     statusCellWithHook(session.status, "sessionStatus"),
-    sessionActionCell(session)
+    sessionActionCell(session, revokeSupported)
   );
   body.append(tr);
 }
@@ -1007,10 +1076,14 @@ function securitySessionTableBody() {
   return document.querySelector<HTMLTableSectionElement>("[data-security-sessions-table] tbody");
 }
 
-function sessionActionCell(session: CustomerSession) {
+function sessionActionCell(session: CustomerSession, revokeSupported: boolean) {
   const cell = document.createElement("td");
   if (session.status === "verified") {
     cell.append(sessionMutedAction("Current"));
+    return cell;
+  }
+  if (!revokeSupported) {
+    cell.append(sessionMutedAction("Provider managed"));
     return cell;
   }
 
@@ -1031,8 +1104,17 @@ function sessionMutedAction(label: string) {
   return span;
 }
 
-function hydratePreferences(form: HTMLFormElement) {
-  const raw = window.localStorage.getItem("fiducia.customer.preferences");
+function hydratePreferencesForUser(userId: string | null) {
+  const form = document.querySelector<HTMLFormElement>("[data-preference-form]");
+  if (form) {
+    hydratePreferences(form, userId);
+  }
+}
+
+function hydratePreferences(form: HTMLFormElement, userId: string | null) {
+  form.reset();
+  const storageKey = preferenceStorageKey(userId);
+  const raw = window.localStorage.getItem(storageKey);
   if (!raw) {
     return;
   }
@@ -1046,8 +1128,13 @@ function hydratePreferences(form: HTMLFormElement) {
     setCheckboxValue(form, "notify_key_rotation", value.notify_key_rotation);
     setCheckboxValue(form, "notify_mfa", value.notify_mfa);
   } catch {
-    window.localStorage.removeItem("fiducia.customer.preferences");
+    window.localStorage.removeItem(storageKey);
   }
+}
+
+function preferenceStorageKey(userId: string | null) {
+  const subject = userId?.replace(/[^a-zA-Z0-9_-]/g, "_") ?? "anonymous";
+  return `fiducia.customer.preferences.${subject}`;
 }
 
 function setSelectValue(form: HTMLFormElement, name: string, value: unknown) {
@@ -1073,6 +1160,9 @@ function setCheckboxValue(form: HTMLFormElement, name: string, value: unknown) {
 // /v1/me) and scopes mutations to the caller's org, so these calls must carry it.
 async function authHeaders(base: Record<string, string> = {}): Promise<Record<string, string>> {
   const headers = { ...base };
+  if (activeSyncOrgId) {
+    headers["x-fiducia-org-id"] = activeSyncOrgId;
+  }
   if (supabaseClient) {
     try {
       const { data } = await supabaseClient.auth.getSession();
@@ -1099,18 +1189,27 @@ async function getJson<T>(path: string): Promise<T> {
   return value;
 }
 
-async function postJson<T>(path: string, payload: unknown): Promise<T> {
-  return requestJson<T>("POST", path, payload);
+async function postJson<T>(path: string, payload: unknown, idempotencyKey?: string): Promise<T> {
+  return requestJson<T>("POST", path, payload, idempotencyKey);
 }
 
 async function putJson<T>(path: string, payload: unknown): Promise<T> {
   return requestJson<T>("PUT", path, payload);
 }
 
-async function requestJson<T>(method: "POST" | "PUT", path: string, payload: unknown): Promise<T> {
+async function requestJson<T>(
+  method: "POST" | "PUT",
+  path: string,
+  payload: unknown,
+  idempotencyKey?: string
+): Promise<T> {
+  const baseHeaders: Record<string, string> = { "content-type": "application/json" };
+  if (idempotencyKey) {
+    baseHeaders["idempotency-key"] = idempotencyKey;
+  }
   const response = await fetch(resolveApiUrl(path), {
     body: JSON.stringify(payload),
-    headers: await authHeaders({ "content-type": "application/json" }),
+    headers: await authHeaders(baseHeaders),
     method
   });
   const value = (await response.json()) as T;
@@ -1123,12 +1222,27 @@ async function requestJson<T>(method: "POST" | "PUT", path: string, payload: unk
   return value;
 }
 
+function mutationIdempotencyKey(operation: string) {
+  const random = globalThis.crypto.randomUUID();
+  return `customer-${operation.replace(/[^a-zA-Z0-9_-]/g, "_")}-${random}`;
+}
+
 function appendApiKeyRow(row: CustomerApiKey, mode: "append" | "prepend" = "prepend") {
   const body = apiKeyTableBody();
   if (!body) {
     return;
   }
 
+  const tr = buildApiKeyRow(row);
+
+  if (mode === "append") {
+    body.append(tr);
+  } else {
+    body.prepend(tr);
+  }
+}
+
+function buildApiKeyRow(row: CustomerApiKey) {
   const tr = document.createElement("tr");
   tr.append(
     tableCell(row.name),
@@ -1136,14 +1250,9 @@ function appendApiKeyRow(row: CustomerApiKey, mode: "append" | "prepend" = "prep
     tableCell(row.scopes, "mono"),
     tableCell(row.last_used),
     statusCell(row.status),
-    apiKeyActionCell(row.prefix)
+    apiKeyActionCell(row.prefix, row.status === "active")
   );
-
-  if (mode === "append") {
-    body.append(tr);
-  } else {
-    body.prepend(tr);
-  }
+  return tr;
 }
 
 function apiKeyTableBody() {
@@ -1183,56 +1292,34 @@ function statusTagClass(status: string) {
   return "tag tag--warn";
 }
 
-function apiKeyActionCell(prefix: string) {
+function apiKeyActionCell(prefix: string, canRotate: boolean) {
   const cell = document.createElement("td");
-  const button = document.createElement("button");
-  button.className = "table-action";
-  button.dataset.apiKeyAction = "rotate";
-  button.dataset.keyPrefix = prefix;
-  button.type = "button";
-  button.textContent = "Rotate";
-  button.addEventListener("click", () => {
-    void rotateApiKey(prefix, button);
+  cell.dataset.apiKeyActions = "";
+  if (!canRotate) {
+    cell.textContent = "—";
+    return cell;
+  }
+  const rotateButton = document.createElement("button");
+  rotateButton.className = "table-action";
+  rotateButton.dataset.apiKeyAction = "rotate";
+  rotateButton.dataset.keyPrefix = prefix;
+  rotateButton.type = "button";
+  rotateButton.textContent = "Rotate";
+  rotateButton.addEventListener("click", () => {
+    void rotateApiKey(prefix, rotateButton);
   });
-  cell.append(button);
+
+  const revokeButton = document.createElement("button");
+  revokeButton.className = "table-action";
+  revokeButton.dataset.apiKeyAction = "revoke";
+  revokeButton.dataset.keyPrefix = prefix;
+  revokeButton.type = "button";
+  revokeButton.textContent = "Revoke";
+  revokeButton.addEventListener("click", () => {
+    void revokeApiKey(prefix, revokeButton);
+  });
+  cell.append(rotateButton, document.createTextNode(" "), revokeButton);
   return cell;
-}
-
-function startRealtime(client: SupabaseClient | null) {
-  if (!client) {
-    return;
-  }
-
-  client
-    .channel("fiducia-customer-portal")
-    .on("postgres_changes", { event: "*", schema: "public", table: "fiducia_locks" }, (payload) => {
-      pushRealtimeEvent("Lock", payload.eventType, payload.new ?? payload.old);
-    })
-    .on("postgres_changes", { event: "*", schema: "public", table: "fiducia_requests" }, (payload) => {
-      pushRealtimeEvent("Request", payload.eventType, payload.new ?? payload.old);
-    })
-    .on("postgres_changes", { event: "*", schema: "public", table: "fiducia_kv" }, (payload) => {
-      pushRealtimeEvent("KV", payload.eventType, payload.new ?? payload.old);
-    })
-    .on("postgres_changes", { event: "*", schema: "public", table: "fiducia_services" }, (payload) => {
-      pushRealtimeEvent("Service", payload.eventType, payload.new ?? payload.old);
-    })
-    .subscribe((status) => {
-      setRealtimeStatus(status.toLowerCase());
-    });
-}
-
-function pushRealtimeEvent(topic: string, verb: string, value: unknown) {
-  setRealtimeStatus("live");
-  if (!backendStreamReady) {
-    htmx.trigger(document.body, "fiducia:refresh");
-  }
-  appendEvent({
-    topic,
-    verb,
-    at: new Date().toISOString(),
-    value: coercePortalEvent(value)
-  });
 }
 
 function startBackendStream(value: CustomerConfig) {
@@ -1248,7 +1335,6 @@ function startBackendWebSocket(value: CustomerConfig) {
   const socket = new WebSocket(resolveWebSocketUrl(value.backendWsPath));
 
   socket.addEventListener("open", () => {
-    backendStreamReady = true;
     setBackendStatus("websocket");
   });
 
@@ -1257,13 +1343,11 @@ function startBackendWebSocket(value: CustomerConfig) {
   });
 
   socket.addEventListener("close", () => {
-    backendStreamReady = false;
     setBackendStatus("reconnecting");
     window.setTimeout(() => startBackendEventSource(value), 1200);
   });
 
   socket.addEventListener("error", () => {
-    backendStreamReady = false;
     setBackendStatus("error");
     socket.close();
   });
@@ -1278,7 +1362,6 @@ function startBackendEventSource(value: CustomerConfig) {
   const source = new EventSource(resolveHttpUrl(value.backendEventsPath));
 
   source.addEventListener("open", () => {
-    backendStreamReady = true;
     setBackendStatus("sse");
   });
 
@@ -1287,7 +1370,6 @@ function startBackendEventSource(value: CustomerConfig) {
   });
 
   source.addEventListener("error", () => {
-    backendStreamReady = false;
     setBackendStatus("reconnecting");
   });
 }
@@ -1298,22 +1380,11 @@ function handleBackendStreamMessage(data: unknown, transport: BackendStreamMessa
     return;
   }
 
-  backendStreamReady = true;
   setBackendStatus(transport === "websocket" ? "websocket" : "sse");
   applyStreamFragments(parsed.fragments);
-  if (parsed.kind === "refresh" && activeSyncUserId) {
+  if (parsed.kind === "refresh" && activeSyncUserId && activeSyncOrgId) {
     void hydrateApiKeys();
   }
-  appendEvent({
-    topic: "Backend Stream",
-    verb: parsed.kind,
-    at: new Date(parsed.at_ms).toISOString(),
-    value: {
-      sequence: parsed.sequence,
-      transport: parsed.transport,
-      fragments: Object.keys(parsed.fragments ?? {})
-    }
-  });
 }
 
 function parseBackendMessage(data: unknown): BackendStreamMessage | null {
@@ -1351,57 +1422,6 @@ function applyStreamFragments(fragments: StreamFragments | undefined) {
   }
 }
 
-function appendEvent(event: { topic: string; verb: string; at: string; value: unknown }) {
-  if (!eventsEl) {
-    return;
-  }
-
-  const item = document.createElement("article");
-  item.className = "event-item";
-
-  const meta = document.createElement("div");
-  meta.className = "event-item__meta";
-  meta.textContent = `${event.topic} ${event.verb} - ${formatClock(event.at)}`;
-
-  const body = document.createElement("pre");
-  body.textContent = JSON.stringify(event.value, null, 2);
-
-  item.append(meta, body);
-  eventsEl.prepend(item);
-
-  while (eventsEl.children.length > 18) {
-    eventsEl.lastElementChild?.remove();
-  }
-}
-
-function coercePortalEvent(value: unknown): PortalEvent | unknown {
-  if (!isRecord(value)) {
-    return value;
-  }
-
-  if (value.kind === "lock" && typeof value.key === "string") {
-    return value as LockEvent;
-  }
-
-  if (value.kind === "request" && typeof value.path === "string") {
-    return value as RequestEvent;
-  }
-
-  if (value.kind === "kv" && typeof value.key === "string") {
-    return value as KvEvent;
-  }
-
-  if (value.kind === "service") {
-    return value as ServiceEvent;
-  }
-
-  if (value.kind === "leadership") {
-    return value as LeadershipEvent;
-  }
-
-  return value;
-}
-
 function readFormString(data: FormData, key: string, trim = true) {
   const value = data.get(key);
   if (typeof value !== "string") {
@@ -1435,6 +1455,12 @@ function disableSupabaseControls() {
 function setAuthMessage(message: string) {
   if (authMessageEl) {
     authMessageEl.textContent = message;
+  }
+}
+
+function setOrgMessage(message: string) {
+  if (orgMessageEl) {
+    orgMessageEl.textContent = message;
   }
 }
 
@@ -1515,14 +1541,6 @@ function startFreshnessClock() {
 
   tick();
   window.setInterval(tick, 1000);
-}
-
-function formatClock(iso: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-  }).format(new Date(iso));
 }
 
 function resolveHttpUrl(path: string) {

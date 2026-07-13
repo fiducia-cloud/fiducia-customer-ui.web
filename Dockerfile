@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Static Vite customer portal image.
-FROM node:22.17.0-bookworm-slim@sha256:b04ce4ae4e95b522112c2e5c52f781471a5cbc3b594527bcddedee9bc48c03a0 AS build
+FROM node:26.5.0-bookworm-slim@sha256:e999d087492c7227c85adc70574cf9d3cce774c3e6d7b8dfe473ee6b142c8f2c AS build
 WORKDIR /build/fiducia-customer-ui.web
 COPY package*.json ./
 RUN npm ci --omit=dev --ignore-scripts

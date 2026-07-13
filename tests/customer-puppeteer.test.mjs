@@ -11,6 +11,7 @@ test("puppeteer verifies auth gating, 2FA gating, and API-key backend actions", 
   t.after(() => server.stop());
 
   const browser = await puppeteer.launch({
+    args: process.env.CI === "true" ? ["--no-sandbox", "--disable-setuid-sandbox"] : [],
     executablePath: chromeExecutablePath(),
     headless: "new"
   });

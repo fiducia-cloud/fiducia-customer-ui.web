@@ -717,44 +717,43 @@ async function renderApiKeysFromStore(): Promise<boolean> {
   return true;
 }
 
+// Cold-start / reconnect catch-up. Runs on initial load and on every WS reconnect
+// so changes that landed while this client was away show up immediately. Reentry
+// is guarded (the initial call can race the first WS "open").
 async function hydrateApiKeys() {
   const body = apiKeyTableBody();
-  if (!body) {
+  if (!body || hydratingApiKeys) {
     return;
   }
+  hydratingApiKeys = true;
 
   try {
-    const listed = await getJson<ApiKeyListResponse>("/api/customer/api-keys");
-
-    // Seed the local store from the authoritative list. DB-backed rows carry an
-    // `id` + `version`; mock rows do not, so nothing is stored on the mock path.
+    // Local-first: reconcile the authoritative snapshot from the INDEXED catch-up
+    // endpoint THROUGH the sync client. Unlike a raw store.put seed this goes via
+    // reconcile — so un-acked optimistic edits survive, and `prune: true` drops
+    // rows deleted server-side while we were away.
     if (apiKeySync) {
-      try {
-        for (const row of listed.api_keys) {
-          if (row.id) {
-            await apiKeySync.store.put("api_keys", row.id, row, {
-              version: row.version ?? 0,
-              dirty: false
-            });
-          }
+      const rows = await fetchApiKeyCatchup();
+      if (rows) {
+        await apiKeySync.client.hydrate("api_keys", rows, { prune: true });
+        if (await renderApiKeysFromStore()) {
+          setApiKeyMessage(`Loaded ${rows.length} customer API keys (local-first).`);
+          return;
         }
-      } catch (error) {
-        console.debug("seeding api_keys store failed:", errorMessage(error));
-      }
-
-      // Prefer the local-first store when it holds anything.
-      if (await renderApiKeysFromStore()) {
-        setApiKeyMessage(`Loaded ${listed.api_keys.length} customer API keys (local-first).`);
-        return;
       }
     }
 
-    // Fallback: render straight from the fetched list (mock path / empty store).
+    // Fallback (mock path / empty store / sync unavailable): render the plain list.
+    // The list endpoint also covers the no-DB mock rows (which carry no id/version
+    // and so never enter the local-first store).
+    const listed = await getJson<ApiKeyListResponse>("/api/customer/api-keys");
     body.textContent = "";
     listed.api_keys.forEach((row) => appendApiKeyRow(row, "append"));
     setApiKeyMessage(`Loaded ${listed.api_keys.length} customer API keys.`);
   } catch (error) {
     setApiKeyMessage(`${errorMessage(error)} Showing server-rendered keys.`);
+  } finally {
+    hydratingApiKeys = false;
   }
 }
 

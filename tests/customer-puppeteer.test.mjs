@@ -36,7 +36,7 @@ test("puppeteer verifies auth gating, 2FA gating, and API-key backend actions", 
   await page.type("input[name='name']", "Puppeteer issued key");
   await page.select("select[name='scope']", "kv:write");
   await Promise.all([
-    page.click("button[type='submit']"),
+    page.click("[data-api-key-form] button[type='submit']"),
     page.waitForFunction(() =>
       document.querySelector("[data-api-key-message]")?.textContent?.includes("Puppeteer issued key created")
     )

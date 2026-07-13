@@ -1,21 +1,12 @@
 // Entry point for the Fiducia customer portal browser bundle: wires Supabase auth
 // (password/passkey/2FA), the api_keys local-first sync vertical, preferences and
 // session controls, and the backend WS/SSE + Supabase realtime event streams into
-// the server-rendered HTMX shell.
+// the independently deployed customer SPA (and the legacy backend-rendered
+// compatibility shell during migration).
 import "./styles.css";
 import htmx from "htmx.org";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
-import {
-  connectBackend,
-  loadBrowserCore,
-  makeQueue,
-  makeSyncClient,
-  openStore,
-  subscribeSupabase,
-  type SyncChange,
-  type SyncClient,
-  type SyncStore
-} from "@fiducia/sync";
+import type { SyncChange, SyncClient, SyncQueue, SyncStore } from "@fiducia/sync";
 import type {
   ElectionGetResponse,
   KvGetResponse,
@@ -36,10 +27,12 @@ type FiduciaRegion =
 
 type CustomerConfig = {
   apiBase: string;
+  authBase?: string;
   backendEventsPath: string;
   backendWsPath: string;
   customerHost: string;
   regions: FiduciaRegion[];
+  syncModuleUrl?: string;
   supabaseUrl?: string;
   supabaseAnonKey?: string;
 };
@@ -173,11 +166,13 @@ declare global {
 window.htmx = htmx;
 
 const defaultConfig: CustomerConfig = {
-  apiBase: "",
+  apiBase: import.meta.env.VITE_FIDUCIA_CUSTOMER_API_BASE ?? "",
+  authBase: import.meta.env.VITE_FIDUCIA_AUTH_BASE ?? "",
   backendEventsPath: "/app/events",
   backendWsPath: "/app/ws",
   customerHost: "app.fiducia.cloud",
-  regions: ["auto", "iad1", "sfo1", "ams1", "fra1", "sin1", "syd1"]
+  regions: ["auto", "iad1", "sfo1", "ams1", "fra1", "sin1", "syd1"],
+  syncModuleUrl: import.meta.env.VITE_FIDUCIA_SYNC_MODULE_URL ?? ""
 };
 
 const config = {
@@ -215,6 +210,23 @@ let pendingMfaFactorId: string | null = null;
 // core + IndexedDB store come up; when null the view falls back to the fetch path.
 type ApiKeySyncHandle = { store: SyncStore; client: SyncClient };
 let apiKeySync: ApiKeySyncHandle | null = null;
+
+type SyncModule = {
+  connectBackend(options: {
+    baseUrl: string;
+    onChanges: (changes: SyncChange[]) => void;
+    onStatus: (status: string) => void;
+  }): { stop(): void };
+  loadBrowserCore(): Promise<unknown>;
+  makeQueue(store: SyncStore): SyncQueue;
+  makeSyncClient(deps: { store: SyncStore; queue: SyncQueue; core: unknown }): SyncClient;
+  openStore(dbName: string, tables: string[]): Promise<SyncStore>;
+  subscribeSupabase(options: {
+    client: SupabaseClient;
+    tables: string[];
+    onChange: (change: SyncChange) => void;
+  }): { stop(): void };
+};
 
 setBackendStatus("connecting");
 setRealtimeStatus(supabaseClient ? "connecting" : "offline");
@@ -277,12 +289,33 @@ function initializeAuth(client: SupabaseClient | null) {
       return;
     }
 
-    renderAuthSession(data.session ?? null);
+    void acceptAuthSession(data.session ?? null);
   });
 
   client.auth.onAuthStateChange((_event, session) => {
-    renderAuthSession(session);
+    void acceptAuthSession(session);
   });
+}
+
+async function acceptAuthSession(session: Session | null) {
+  if (!session || !config.authBase) {
+    renderAuthSession(session);
+    return;
+  }
+
+  renderAuthSession(session, "verifying");
+  try {
+    const response = await fetch(resolveAuthUrl("/v1/me"), {
+      headers: { authorization: `Bearer ${session.access_token}` }
+    });
+    if (!response.ok) {
+      throw new Error(`fiducia-auth rejected the session (${response.status})`);
+    }
+    renderAuthSession(session, "verified");
+  } catch (error) {
+    renderAuthSession(null);
+    setAuthMessage(errorMessage(error));
+  }
 }
 
 function bindAuthForms(client: SupabaseClient | null) {
@@ -415,9 +448,9 @@ function bindSignOutControls(client: SupabaseClient | null) {
   });
 }
 
-function renderAuthSession(session: Session | null) {
+function renderAuthSession(session: Session | null, verification?: "verifying" | "verified") {
   const signedIn = Boolean(session);
-  const label = signedIn ? "signed in" : "signed out";
+  const label = verification ?? (signedIn ? "signed in" : "signed out");
   const email = session?.user.email ?? "No customer signed in";
   document.body.dataset.authenticated = signedIn ? "true" : "false";
 
@@ -598,18 +631,23 @@ function bindApiKeyControls() {
 // failure (no wasm, no IndexedDB) leaves `apiKeySync` null and the view falls back
 // to the plain fetch path, so the portal degrades gracefully and never throws.
 async function setupApiKeySync(): Promise<void> {
+  if (!config.syncModuleUrl) {
+    return;
+  }
+
   try {
-    const core = await loadBrowserCore();
-    const store = await openStore("fiducia-customer", ["api_keys"]);
-    const queue = makeQueue(store);
-    const client = makeSyncClient({ store, queue, core });
+    const sync = (await import(/* @vite-ignore */ config.syncModuleUrl)) as SyncModule;
+    const core = await sync.loadBrowserCore();
+    const store = await sync.openStore("fiducia-customer", ["api_keys"]);
+    const queue = sync.makeQueue(store);
+    const client = sync.makeSyncClient({ store, queue, core });
     apiKeySync = { store, client };
 
     // Transport 1: the backend WS/SSE (always available, carries `version`).
     // Re-hydrate on every (re)connect so a reconnect catches up on anything the
     // streams missed while the socket was down.
-    connectBackend({
-      baseUrl: location.origin,
+    sync.connectBackend({
+      baseUrl: config.apiBase || location.origin,
       onChanges: (changes) => {
         void applyApiKeyChanges(changes);
       },
@@ -626,7 +664,7 @@ async function setupApiKeySync(): Promise<void> {
     // Requires the synced tables to be in the supabase_realtime publication +
     // REPLICA IDENTITY FULL (see fiducia-interfaces sql/customer.sql).
     if (supabaseClient) {
-      subscribeSupabase({
+      sync.subscribeSupabase({
         client: supabaseClient,
         tables: ["api_keys"],
         onChange: (change) => {
@@ -1358,7 +1396,7 @@ function readFormString(data: FormData, key: string, trim = true) {
 }
 
 function customerRedirectUrl() {
-  return new URL("/app", window.location.origin).toString();
+  return new URL("/", window.location.origin).toString();
 }
 
 function errorMessage(error: unknown) {
@@ -1472,15 +1510,19 @@ function formatClock(iso: string) {
 }
 
 function resolveHttpUrl(path: string) {
-  return new URL(path, window.location.origin).toString();
+  return new URL(path, config.apiBase || window.location.origin).toString();
 }
 
 function resolveApiUrl(path: string) {
   return new URL(path, config.apiBase || window.location.origin).toString();
 }
 
+function resolveAuthUrl(path: string) {
+  return new URL(path, config.authBase || config.apiBase || window.location.origin).toString();
+}
+
 function resolveWebSocketUrl(path: string) {
-  const url = new URL(path, window.location.origin);
+  const url = new URL(path, config.apiBase || window.location.origin);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
 }

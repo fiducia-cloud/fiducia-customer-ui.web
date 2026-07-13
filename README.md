@@ -1,56 +1,73 @@
 # fiducia-customer-ui.web
 
-HTMX customer portal assets for `fiducia-backend.rs`.
+The independently deployable customer web application for Fiducia. It owns the
+customer login, signup, account security, API-key, session, preference, and
+customer realtime experiences. It does not contain admin routes or admin-plane
+credentials.
 
-The backend renders the portal shell with Axum + Maud and serves this Vite build
-from `CUSTOMER_STATIC_DIR`:
+## Authentication boundary
+
+The browser signs in with the configured Supabase project and receives a normal
+Supabase access token. The portal then:
+
+1. verifies the token with `fiducia-auth` `GET /v1/me` when `authBase` is set;
+2. sends that bearer token to the customer API for every protected request; and
+3. relies on the customer API to verify the same identity through
+   `fiducia-auth` and scope data to the caller's organization.
+
+The Supabase anon key is browser-public. Never put a Supabase service-role key,
+an internal service secret, or an admin credential in this app.
+
+## Run and build
 
 ```sh
-npm install
+npm ci
+npm run check
+npm run dev
 npm run build
-CUSTOMER_STATIC_DIR=../fiducia-customer-ui.web/dist cargo run
 ```
 
-`app.fiducia.cloud` should route to `fiducia-backend.rs`. Requests with
-`Host: app.fiducia.cloud` render the portal at `/`; the same portal is always
-available at `/app`.
+`dist/` is a complete static site containing `index.html`, `config.js`, and the
+versioned application assets. The included Dockerfile serves it with nginx.
 
-## Shared Interfaces
+## Runtime configuration
 
-The UI imports typed contracts from the local interface package:
+Deployments replace `/config.js` without rebuilding the image:
 
-```ts
-import type { LockGrant, KvGetResponse } from "@fiducia/interfaces/typescript";
+```js
+window.FIDUCIA_CUSTOMER_CONFIG = {
+  apiBase: "https://api.fiducia.cloud",
+  authBase: "https://auth.fiducia.cloud",
+  backendEventsPath: "/app/events",
+  backendWsPath: "/app/ws",
+  customerHost: "app.fiducia.cloud",
+  supabaseUrl: "https://example.supabase.co",
+  supabaseAnonKey: "public-anon-key",
+  syncModuleUrl: ""
+};
 ```
 
-The dependency is local in `package.json`:
+`apiBase` controls HTTP, WebSocket, and SSE traffic, so the static app and API
+may run on different origins. `authBase` enables the explicit browser-side
+`/v1/me` verification. Both services must allow the customer origin through
+their CORS policy.
 
-```json
-"@fiducia/interfaces": "file:../fiducia-interfaces"
-```
+`syncModuleUrl` is optional. When supplied, the portal loads the local-first
+sync SDK as a runtime enhancement. A missing SDK never blocks the build or the
+authoritative customer API fallback.
 
-## Realtime
+The old backend-rendered shell remains compatible with `assets/customer.js` and
+`assets/customer.css` during migration, but new deployments should serve this
+repo's `dist/` directly at the customer hostname.
 
-If these variables are provided to `fiducia-backend.rs`, the rendered portal
-passes them to the browser and subscribes through Supabase realtime. That is the
-browser's single Supabase WebSocket:
+## Shared interfaces
 
-- `SUPABASE_URL`
-- `SUPABASE_ANON_KEY`
+The UI imports customer-safe types from `fiducia-interfaces`. Network payloads
+and auth behavior remain defined by shared contracts; presentation and
+deployment remain isolated from `fiducia-admin.rs`.
 
-The current client listens for changes on:
+## Tests
 
-- `public.fiducia_locks`
-- `public.fiducia_requests`
-- `public.fiducia_kv`
-- `public.fiducia_services`
-
-The browser also opens one stream to `fiducia-backend.rs`:
-
-- WebSocket: `/app/ws`
-- SSE fallback: `/app/events`
-
-The backend stream sends rendered HTML fragments for the dashboard panels, so
-normal updates do not need a fresh HTMX HTTP request for each fragment. The
-manual refresh button and `fiducia:refresh` HTMX event remain available as
-fallback paths.
+`npm run test:browser` exercises the customer flows against the real customer
+backend. The database-backed spec skips only when its external Postgres
+dependency is unavailable.

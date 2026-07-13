@@ -9,7 +9,7 @@ RUN git clone --depth 1 --branch "$INTERFACES_REF" \
     https://github.com/fiducia-cloud/fiducia-interfaces.git fiducia-interfaces
 COPY package*.json fiducia-customer-ui.web/
 WORKDIR /build/fiducia-customer-ui.web
-RUN npm ci
+RUN npm ci --omit=dev
 COPY . .
 RUN npm run build
 

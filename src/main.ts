@@ -68,6 +68,21 @@ type RotateApiKeyResponse = {
   replacement_secret?: string;
 };
 
+type RevokeApiKeyResponse = {
+  error?: string;
+  ok: boolean;
+  prefix?: string;
+  status?: string;
+};
+
+type CustomerContextResponse = {
+  user: {
+    email?: string;
+    orgs: string[];
+    user_id: string;
+  };
+};
+
 type CustomerPreferences = {
   density: string;
   notify_key_rotation: boolean;
@@ -145,6 +160,9 @@ const freshnessEls = document.querySelectorAll<HTMLElement>("[data-freshness-clo
 const authStatusEls = document.querySelectorAll<HTMLElement>("[data-auth-status]");
 const authEmailEls = document.querySelectorAll<HTMLElement>("[data-auth-email]");
 const authMessageEl = document.querySelector<HTMLElement>("[data-auth-message]");
+const orgPanelEl = document.querySelector<HTMLElement>("[data-org-panel]");
+const orgSelectEl = document.querySelector<HTMLSelectElement>("[data-org-select]");
+const orgMessageEl = document.querySelector<HTMLElement>("[data-org-message]");
 const apiKeyMessageEl = document.querySelector<HTMLElement>("[data-api-key-message]");
 const preferenceMessageEl = document.querySelector<HTMLElement>("[data-preference-message]");
 const mfaMessageEl = document.querySelector<HTMLElement>("[data-mfa-message]");
@@ -163,6 +181,8 @@ let pendingMfaFactorId: string | null = null;
 type ApiKeySyncHandle = { store: SyncStore; client: SyncClient };
 let apiKeySync: ApiKeySyncHandle | null = null;
 let activeSyncUserId: string | null | undefined;
+let activeSyncOrgId: string | null = null;
+let availableOrgIds: string[] = [];
 let syncGeneration = 0;
 
 type SyncModule = {
@@ -175,6 +195,7 @@ type SyncModule = {
 setBackendStatus("connecting");
 setRealtimeStatus(supabaseClient ? "configured" : "offline");
 initializeAuth(supabaseClient);
+bindOrganizationControls();
 bindApiKeyControls();
 bindPreferenceControls();
 bindSecuritySessionControls();
@@ -277,9 +298,13 @@ async function activateCustomerSession(session: Session | null) {
   }
 
   activeSyncUserId = nextUserId;
-  const generation = ++syncGeneration;
+  activeSyncOrgId = null;
+  availableOrgIds = [];
+  ++syncGeneration;
   apiKeySync?.store.close();
   apiKeySync = null;
+  configureOrganizationSelector(nextUserId, []);
+  hydratePreferencesForUser(nextUserId);
 
   const body = apiKeyTableBody();
   if (body) {
@@ -290,10 +315,96 @@ async function activateCustomerSession(session: Session | null) {
     return;
   }
 
-  await setupApiKeySync(nextUserId, generation);
+  try {
+    const context = await getJson<CustomerContextResponse>("/api/customer/context");
+    const orgs = Array.from(
+      new Set(context.user.orgs.filter((orgId) => typeof orgId === "string" && orgId.trim()))
+    );
+    configureOrganizationSelector(nextUserId, orgs);
+    const selected = preferredOrganization(nextUserId, orgs);
+    if (selected) {
+      if (orgSelectEl) {
+        orgSelectEl.value = selected;
+      }
+      await switchCustomerOrganization(selected);
+    } else {
+      setApiKeyMessage("Select an organization to load customer API keys.");
+    }
+  } catch (error) {
+    setOrgMessage(errorMessage(error));
+    setApiKeyMessage("Could not load verified organization membership.");
+  }
+}
+
+function bindOrganizationControls() {
+  orgSelectEl?.addEventListener("change", () => {
+    void switchCustomerOrganization(orgSelectEl.value);
+  });
+}
+
+function configureOrganizationSelector(userId: string | null, orgs: string[]) {
+  availableOrgIds = orgs;
+  if (!orgPanelEl || !orgSelectEl) {
+    return;
+  }
+  orgPanelEl.hidden = !userId;
+  orgSelectEl.textContent = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = orgs.length ? "Select an organization" : "No organizations available";
+  orgSelectEl.append(placeholder);
+  for (const orgId of orgs) {
+    const option = document.createElement("option");
+    option.value = orgId;
+    option.textContent = orgId;
+    orgSelectEl.append(option);
+  }
+  orgSelectEl.disabled = !orgs.length;
+  setOrgMessage(
+    orgs.length > 1
+      ? "Choose the organization whose credentials you want to manage."
+      : orgs.length === 1
+        ? "Organization membership verified."
+        : userId
+          ? "No verified organization membership."
+          : ""
+  );
+}
+
+function preferredOrganization(userId: string, orgs: string[]) {
+  if (orgs.length === 1) {
+    return orgs[0];
+  }
+  const saved = window.localStorage.getItem(organizationStorageKey(userId));
+  return saved && orgs.includes(saved) ? saved : null;
+}
+
+async function switchCustomerOrganization(orgId: string) {
+  const userId = activeSyncUserId;
+  if (!userId || !availableOrgIds.includes(orgId)) {
+    activeSyncOrgId = null;
+    setOrgMessage(orgId ? "That organization is not in the verified membership list." : "Select an organization.");
+    return;
+  }
+
+  const generation = ++syncGeneration;
+  apiKeySync?.store.close();
+  apiKeySync = null;
+  activeSyncOrgId = orgId;
+  window.localStorage.setItem(organizationStorageKey(userId), orgId);
+  const body = apiKeyTableBody();
+  if (body) {
+    body.textContent = "";
+  }
+  setOrgMessage(`Using organization ${orgId}.`);
+  await setupApiKeySync(userId, orgId, generation);
   if (generation === syncGeneration) {
     await hydrateApiKeys();
   }
+}
+
+function organizationStorageKey(userId: string) {
+  return `fiducia.customer.organization.${userId.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 }
 
 function bindAuthForms(client: SupabaseClient | null) {
@@ -590,10 +701,14 @@ function bindApiKeyControls() {
     void createApiKey(form);
   });
 
-  document.querySelectorAll<HTMLButtonElement>("[data-api-key-action='rotate']").forEach((button) => {
+  document.querySelectorAll<HTMLButtonElement>("[data-api-key-action]").forEach((button) => {
     button.addEventListener("click", () => {
       const prefix = button.dataset.keyPrefix ?? "selected key";
-      void rotateApiKey(prefix, button);
+      if (button.dataset.apiKeyAction === "revoke") {
+        void revokeApiKey(prefix, button);
+      } else {
+        void rotateApiKey(prefix, button);
+      }
     });
   });
 }
@@ -605,7 +720,7 @@ function bindApiKeyControls() {
 // the database record contains server-only fields that are not part of the
 // customer display contract. Best-effort: any failure (no wasm, no IndexedDB)
 // leaves `apiKeySync` null and the view falls back to the plain fetch path.
-async function setupApiKeySync(userId: string, generation: number): Promise<void> {
+async function setupApiKeySync(userId: string, orgId: string, generation: number): Promise<void> {
   if (!config.syncModuleUrl) {
     return;
   }
@@ -614,7 +729,8 @@ async function setupApiKeySync(userId: string, generation: number): Promise<void
     const sync = (await import(/* @vite-ignore */ config.syncModuleUrl)) as SyncModule;
     const core = await sync.loadBrowserCore();
     const safeUserId = userId.replace(/[^a-zA-Z0-9_-]/g, "_");
-    const store = await sync.openStore(`fiducia-customer-${safeUserId}`, ["api_keys"]);
+    const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "_");
+    const store = await sync.openStore(`fiducia-customer-${safeUserId}-${safeOrgId}`, ["api_keys"]);
     if (generation !== syncGeneration) {
       store.close();
       return;
@@ -721,12 +837,16 @@ async function createApiKey(form: HTMLFormElement) {
     setApiKeyMessage("Creating API key...");
     // The create endpoint mints + shows the secret once (and, DB-backed, persists
     // the row + returns its id/version).
-    const created = await postJson<CreateApiKeyResponse>("/api/customer/api-keys", {
-      environment,
-      name,
-      require_idempotency: requiresIdempotency,
-      scope
-    });
+    const created = await postJson<CreateApiKeyResponse>(
+      "/api/customer/api-keys",
+      {
+        environment,
+        name,
+        require_idempotency: requiresIdempotency,
+        scope
+      },
+      mutationIdempotencyKey("create-key")
+    );
 
     if (!created.ok || !created.api_key) {
       throw new Error(created.error ?? "api_key_create_failed");
@@ -764,7 +884,11 @@ async function rotateApiKey(prefix: string, button: HTMLButtonElement) {
   try {
     button.disabled = true;
     setApiKeyMessage(`Rotating ${prefix}...`);
-    const rotated = await postJson<RotateApiKeyResponse>("/api/customer/api-keys/rotate", { prefix });
+    const rotated = await postJson<RotateApiKeyResponse>(
+      "/api/customer/api-keys/rotate",
+      { prefix },
+      mutationIdempotencyKey(`rotate-${prefix}`)
+    );
 
     if (!rotated.ok) {
       throw new Error(rotated.error ?? "api_key_rotation_failed");
@@ -794,13 +918,45 @@ async function rotateApiKey(prefix: string, button: HTMLButtonElement) {
   }
 }
 
+async function revokeApiKey(prefix: string, button: HTMLButtonElement) {
+  try {
+    button.disabled = true;
+    setApiKeyMessage(`Revoking ${prefix}...`);
+    const revoked = await postJson<RevokeApiKeyResponse>(
+      "/api/customer/api-keys/revoke",
+      { prefix },
+      mutationIdempotencyKey(`revoke-${prefix}`)
+    );
+    if (!revoked.ok) {
+      throw new Error(revoked.error ?? "api_key_revoke_failed");
+    }
+    if (apiKeySync) {
+      await hydrateApiKeys();
+    } else {
+      const row = button.closest("tr");
+      const status = row?.querySelector<HTMLElement>("[data-api-key-status]");
+      if (status) {
+        status.textContent = "revoked";
+        status.className = "tag tag--error";
+      }
+      row?.querySelector<HTMLElement>("[data-api-key-actions]")?.replaceChildren(
+        sessionMutedAction("Revoked")
+      );
+    }
+    setApiKeyMessage(`${prefix} revoked.`);
+  } catch (error) {
+    button.disabled = false;
+    setApiKeyMessage(errorMessage(error));
+  }
+}
+
 function bindPreferenceControls() {
   const form = document.querySelector<HTMLFormElement>("[data-preference-form]");
   if (!form) {
     return;
   }
 
-  hydratePreferences(form);
+  hydratePreferences(form, null);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     void savePreferences(form);
@@ -809,6 +965,7 @@ function bindPreferenceControls() {
 
 async function savePreferences(form: HTMLFormElement) {
   const preferences = readPreferenceForm(form);
+  const storageKey = preferenceStorageKey(activeSyncUserId ?? null);
 
   try {
     setPreferenceMessage("Saving preferences...");
@@ -817,10 +974,10 @@ async function savePreferences(form: HTMLFormElement) {
       throw new Error(saved.error ?? "preferences_save_failed");
     }
 
-    window.localStorage.setItem("fiducia.customer.preferences", JSON.stringify(saved.preferences));
+    window.localStorage.setItem(storageKey, JSON.stringify(saved.preferences));
     setPreferenceMessage("Preferences saved.");
   } catch (error) {
-    window.localStorage.setItem("fiducia.customer.preferences", JSON.stringify(preferences));
+    window.localStorage.setItem(storageKey, JSON.stringify(preferences));
     setPreferenceMessage(`${errorMessage(error)} Local preference fallback saved.`);
   }
 }
@@ -943,8 +1100,17 @@ function sessionMutedAction(label: string) {
   return span;
 }
 
-function hydratePreferences(form: HTMLFormElement) {
-  const raw = window.localStorage.getItem("fiducia.customer.preferences");
+function hydratePreferencesForUser(userId: string | null) {
+  const form = document.querySelector<HTMLFormElement>("[data-preference-form]");
+  if (form) {
+    hydratePreferences(form, userId);
+  }
+}
+
+function hydratePreferences(form: HTMLFormElement, userId: string | null) {
+  form.reset();
+  const storageKey = preferenceStorageKey(userId);
+  const raw = window.localStorage.getItem(storageKey);
   if (!raw) {
     return;
   }
@@ -958,8 +1124,13 @@ function hydratePreferences(form: HTMLFormElement) {
     setCheckboxValue(form, "notify_key_rotation", value.notify_key_rotation);
     setCheckboxValue(form, "notify_mfa", value.notify_mfa);
   } catch {
-    window.localStorage.removeItem("fiducia.customer.preferences");
+    window.localStorage.removeItem(storageKey);
   }
+}
+
+function preferenceStorageKey(userId: string | null) {
+  const subject = userId?.replace(/[^a-zA-Z0-9_-]/g, "_") ?? "anonymous";
+  return `fiducia.customer.preferences.${subject}`;
 }
 
 function setSelectValue(form: HTMLFormElement, name: string, value: unknown) {
@@ -985,6 +1156,9 @@ function setCheckboxValue(form: HTMLFormElement, name: string, value: unknown) {
 // /v1/me) and scopes mutations to the caller's org, so these calls must carry it.
 async function authHeaders(base: Record<string, string> = {}): Promise<Record<string, string>> {
   const headers = { ...base };
+  if (activeSyncOrgId) {
+    headers["x-fiducia-org-id"] = activeSyncOrgId;
+  }
   if (supabaseClient) {
     try {
       const { data } = await supabaseClient.auth.getSession();
@@ -1011,18 +1185,27 @@ async function getJson<T>(path: string): Promise<T> {
   return value;
 }
 
-async function postJson<T>(path: string, payload: unknown): Promise<T> {
-  return requestJson<T>("POST", path, payload);
+async function postJson<T>(path: string, payload: unknown, idempotencyKey?: string): Promise<T> {
+  return requestJson<T>("POST", path, payload, idempotencyKey);
 }
 
 async function putJson<T>(path: string, payload: unknown): Promise<T> {
   return requestJson<T>("PUT", path, payload);
 }
 
-async function requestJson<T>(method: "POST" | "PUT", path: string, payload: unknown): Promise<T> {
+async function requestJson<T>(
+  method: "POST" | "PUT",
+  path: string,
+  payload: unknown,
+  idempotencyKey?: string
+): Promise<T> {
+  const baseHeaders: Record<string, string> = { "content-type": "application/json" };
+  if (idempotencyKey) {
+    baseHeaders["idempotency-key"] = idempotencyKey;
+  }
   const response = await fetch(resolveApiUrl(path), {
     body: JSON.stringify(payload),
-    headers: await authHeaders({ "content-type": "application/json" }),
+    headers: await authHeaders(baseHeaders),
     method
   });
   const value = (await response.json()) as T;
@@ -1033,6 +1216,11 @@ async function requestJson<T>(method: "POST" | "PUT", path: string, payload: unk
   }
 
   return value;
+}
+
+function mutationIdempotencyKey(operation: string) {
+  const random = globalThis.crypto.randomUUID();
+  return `customer-${operation.replace(/[^a-zA-Z0-9_-]/g, "_")}-${random}`;
 }
 
 function appendApiKeyRow(row: CustomerApiKey, mode: "append" | "prepend" = "prepend") {
@@ -1102,20 +1290,31 @@ function statusTagClass(status: string) {
 
 function apiKeyActionCell(prefix: string, canRotate: boolean) {
   const cell = document.createElement("td");
+  cell.dataset.apiKeyActions = "";
   if (!canRotate) {
     cell.textContent = "—";
     return cell;
   }
-  const button = document.createElement("button");
-  button.className = "table-action";
-  button.dataset.apiKeyAction = "rotate";
-  button.dataset.keyPrefix = prefix;
-  button.type = "button";
-  button.textContent = "Rotate";
-  button.addEventListener("click", () => {
-    void rotateApiKey(prefix, button);
+  const rotateButton = document.createElement("button");
+  rotateButton.className = "table-action";
+  rotateButton.dataset.apiKeyAction = "rotate";
+  rotateButton.dataset.keyPrefix = prefix;
+  rotateButton.type = "button";
+  rotateButton.textContent = "Rotate";
+  rotateButton.addEventListener("click", () => {
+    void rotateApiKey(prefix, rotateButton);
   });
-  cell.append(button);
+
+  const revokeButton = document.createElement("button");
+  revokeButton.className = "table-action";
+  revokeButton.dataset.apiKeyAction = "revoke";
+  revokeButton.dataset.keyPrefix = prefix;
+  revokeButton.type = "button";
+  revokeButton.textContent = "Revoke";
+  revokeButton.addEventListener("click", () => {
+    void revokeApiKey(prefix, revokeButton);
+  });
+  cell.append(rotateButton, document.createTextNode(" "), revokeButton);
   return cell;
 }
 
@@ -1179,7 +1378,7 @@ function handleBackendStreamMessage(data: unknown, transport: BackendStreamMessa
 
   setBackendStatus(transport === "websocket" ? "websocket" : "sse");
   applyStreamFragments(parsed.fragments);
-  if (parsed.kind === "refresh" && activeSyncUserId) {
+  if (parsed.kind === "refresh" && activeSyncUserId && activeSyncOrgId) {
     void hydrateApiKeys();
   }
 }
@@ -1252,6 +1451,12 @@ function disableSupabaseControls() {
 function setAuthMessage(message: string) {
   if (authMessageEl) {
     authMessageEl.textContent = message;
+  }
+}
+
+function setOrgMessage(message: string) {
+  if (orgMessageEl) {
+    orgMessageEl.textContent = message;
   }
 }
 

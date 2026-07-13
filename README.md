@@ -87,9 +87,11 @@ API-key records reconcile only through authenticated catch-up requests. The
 browser does not subscribe to Postgres changes directly: row-level security
 cannot hide server-only columns such as secret hashes, and cluster-wide locks,
 requests, KV, and service discovery belong only in the operator admin app.
-IndexedDB databases are namespaced by the authenticated Supabase user so one
-browser account cannot render another account's cached rows. The manual refresh
-button and `fiducia:refresh` HTMX event remain available as fallback paths.
+IndexedDB databases are namespaced by the authenticated Supabase user and the
+explicitly selected, verified organization, so neither another browser account
+nor another tenant can render cached rows. Local preference fallbacks are also
+namespaced by the authenticated user. The manual refresh button and
+`fiducia:refresh` HTMX event remain available as fallback paths.
 
 ## Tests
 
@@ -98,18 +100,20 @@ fixture and browser-level sanitized BFF mocks. Real auth/KV integration belongs
 to the `fiducia-auth.rs` contract suite, not a customer-Postgres fixture.
 
 `fiducia-auth` is the sole API-key authority. The customer BFF verifies the
-Supabase bearer, forwards create/list/rotate operations to that service, and
-returns only the sanitized customer display contract. The browser never writes
-credential rows directly.
+Supabase bearer, verifies the explicit organization selection, forwards
+create/list/rotate/revoke operations plus mutation idempotency keys to that
+service, and returns only the sanitized customer display contract. The browser
+never writes credential rows directly.
 
 ## Security posture
 
 - **Client-safe vs server-only secrets.** Only the Supabase URL and anon key
   reach the browser. Supabase Row Level Security guards the public anon key. A
   service-role key is server-only and must never appear in `config.js`.
-- **Per-user local state.** Optional IndexedDB databases are namespaced by the
-  verified Supabase user and closed whenever the active identity changes. One
-  browser account cannot render another account's cached API-key rows.
+- **Per-user and per-org local state.** Optional IndexedDB databases are
+  namespaced by the verified Supabase user and selected organization and closed
+  whenever either changes. Preference fallbacks are user-namespaced. One
+  account or tenant cannot render another account's cached customer state.
 - **Authenticated reconciliation.** Customer records reconcile through bearer-
   authenticated catch-up requests or Supabase RLS. The backend WS/SSE channel is
   only a heartbeat/refresh signal and never transports API-key rows.

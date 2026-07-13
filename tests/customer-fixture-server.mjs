@@ -14,6 +14,12 @@ const sessions = [
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
 
+  if (url.pathname === "/api/customer/context" && request.method === "GET") {
+    return json(response, 200, {
+      user: { email: "customer@example.test", orgs: ["org_test"], user_id: "user_test" },
+    });
+  }
+
   if (url.pathname === "/api/customer/api-keys" && request.method === "GET") {
     return json(response, 200, {
       api_keys: apiKeys,
@@ -39,6 +45,16 @@ const server = createServer(async (request, response) => {
   if (url.pathname === "/api/customer/api-keys/rotate" && request.method === "POST") {
     const payload = await readJson(request);
     return json(response, 200, { ok: true, prefix: payload.prefix, overlap_seconds: 900 });
+  }
+  if (url.pathname === "/api/customer/api-keys/revoke" && request.method === "POST") {
+    const payload = await readJson(request);
+    const key = apiKeys.find((item) => item.prefix === payload.prefix);
+    if (key) key.status = "revoked";
+    return json(response, key ? 200 : 404, {
+      ok: Boolean(key),
+      prefix: payload.prefix,
+      status: key ? "revoked" : undefined,
+    });
   }
   if (url.pathname === "/api/customer/preferences" && request.method === "PUT") {
     const preferences = await readJson(request);

@@ -37,6 +37,10 @@ test("playwright drives API keys and preferences through the customer portal", a
   await page.getByRole("row", { name: /Playwright issued key/ }).getByRole("button", { name: "Rotate" }).click();
   await assertVisibleText(page, "rotated with 60s overlap");
 
+  await page.getByRole("row", { name: /Playwright issued key/ }).getByRole("button", { name: "Revoke" }).click();
+  await assertVisibleText(page, "revoked.");
+  await assertVisibleText(page, "revoked");
+
   await page.getByRole("link", { name: /Security/ }).click();
   const safariRow = page.getByRole("row", { name: /Safari on iPhone/ });
   await safariRow.getByText("Provider managed").waitFor({ state: "visible" });

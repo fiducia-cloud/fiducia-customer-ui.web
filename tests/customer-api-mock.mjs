@@ -3,7 +3,12 @@ const jsonHeaders = { "content-type": "application/json" };
 export async function installPlaywrightCustomerApiMock(page) {
   const api = createCustomerApiMock();
   await page.route("**/api/customer/**", async (route) => {
-    const response = api(route.request().method(), route.request().url(), route.request().postData());
+    const response = api(
+      route.request().method(),
+      route.request().url(),
+      route.request().postData(),
+      route.request().headers()
+    );
     await route.fulfill({
       body: JSON.stringify(response.body),
       contentType: "application/json",
@@ -21,7 +26,7 @@ export async function installPuppeteerCustomerApiMock(page) {
       void request.continue();
       return;
     }
-    const response = api(request.method(), request.url(), request.postData());
+    const response = api(request.method(), request.url(), request.postData(), request.headers());
     void request.respond({
       body: JSON.stringify(response.body),
       headers: jsonHeaders,
@@ -42,10 +47,15 @@ function createCustomerApiMock() {
     },
   ];
 
-  return (method, rawUrl, rawBody) => {
+  return (method, rawUrl, rawBody, headers = {}) => {
     const url = new URL(rawUrl);
     const body = rawBody ? JSON.parse(rawBody) : {};
 
+    if (method === "GET" && url.pathname === "/api/customer/context") {
+      return ok({
+        user: { email: "customer@example.test", orgs: ["org_test"], user_id: "user_test" },
+      });
+    }
     if (method === "GET" && url.pathname === "/api/customer/api-keys") {
       return ok(keyList(keys));
     }
@@ -53,6 +63,7 @@ function createCustomerApiMock() {
       return ok({ requested_since: 0, rows: keys, snapshot: true, table: "api_keys" });
     }
     if (method === "POST" && url.pathname === "/api/customer/api-keys") {
+      if (!headers["idempotency-key"]) return badRequest("idempotency_key_required");
       const id = `mock-${sequence++}`;
       const key = {
         environment: body.environment,
@@ -74,6 +85,7 @@ function createCustomerApiMock() {
       });
     }
     if (method === "POST" && url.pathname === "/api/customer/api-keys/rotate") {
+      if (!headers["idempotency-key"]) return badRequest("idempotency_key_required");
       const key = keys.find((candidate) => candidate.prefix === body.prefix);
       if (!key || key.status !== "active") {
         return notFound("key_not_found");
@@ -86,6 +98,14 @@ function createCustomerApiMock() {
         prefix: key.prefix,
         replacement_secret: `${key.prefix}.replacement-shown-once`,
       });
+    }
+    if (method === "POST" && url.pathname === "/api/customer/api-keys/revoke") {
+      if (!headers["idempotency-key"]) return badRequest("idempotency_key_required");
+      const key = keys.find((candidate) => candidate.prefix === body.prefix);
+      if (!key) return notFound("key_not_found");
+      key.status = "revoked";
+      key.version += 1;
+      return ok({ ok: true, prefix: key.prefix, status: "revoked" });
     }
     if (method === "GET" && url.pathname === "/api/customer/security/sessions") {
       return ok({ revoke_supported: false, sessions });
@@ -118,6 +138,10 @@ function ok(body) {
 
 function created(body) {
   return { body, status: 201 };
+}
+
+function badRequest(error) {
+  return { body: { error, ok: false }, status: 400 };
 }
 
 function notFound(error) {

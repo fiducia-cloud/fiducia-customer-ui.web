@@ -49,6 +49,13 @@ test("puppeteer verifies auth gating, 2FA gating, and API-key backend actions", 
     )
   ]);
 
+  await Promise.all([
+    page.click("[data-api-key-action='revoke']"),
+    page.waitForFunction(() =>
+      document.querySelector("[data-api-key-message]")?.textContent?.includes("revoked")
+    )
+  ]);
+
   assert.deepEqual(pageErrors, []);
 });
 

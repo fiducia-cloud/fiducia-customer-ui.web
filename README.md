@@ -68,6 +68,29 @@ deployment remain isolated from `fiducia-admin.rs`.
 
 ## Tests
 
-`npm run test:browser` exercises the customer flows against the real customer
-backend. The database-backed spec skips only when its external Postgres
+`npm run test:browser` exercises the standalone customer app against a local API
+fixture. The database-backed spec skips only when its external Postgres
 dependency is unavailable.
+
+## Security posture
+
+- **Client-safe vs server-only secrets.** Only the Supabase URL and anon key
+  reach the browser. Supabase Row Level Security guards the public anon key. A
+  service-role key is server-only and must never appear in `config.js`.
+- **Per-user local state.** Optional IndexedDB databases are namespaced by the
+  verified Supabase user and closed whenever the active identity changes. One
+  browser account cannot render another account's cached API-key rows.
+- **Authenticated reconciliation.** Customer records reconcile through bearer-
+  authenticated catch-up requests or Supabase RLS. The backend WS/SSE channel is
+  only a heartbeat/refresh signal and never transports API-key rows.
+- **Structured runtime config.** The portal consumes
+  `window.FIDUCIA_CUSTOMER_CONFIG` as data and never interpolates its values into
+  HTML.
+- **Stream fragments are trusted, server-rendered HTML.** The single
+  `applyStreamFragments()` `innerHTML` sink consumes HTML fragments rendered by
+  the customer backend through Maud; that service is the escaping boundary. All
+  customer/API-key values render through `textContent`/`createElement`.
+- **HTTP security headers** (CSP, `X-Content-Type-Options`,
+  `frame-ancestors`, `Referrer-Policy`) belong at the static hosting edge. This
+  SPA ships no application cookies; Supabase browser storage and bearer tokens
+  remain isolated from the admin app's HttpOnly cookie.

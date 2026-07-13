@@ -45,7 +45,15 @@ declare module "@fiducia/sync" {
       row: unknown,
       send: (write: unknown) => Promise<SyncAck>
     ): Promise<{ status: string; version?: number; error?: string }>;
-    flushQueue(send: (write: unknown) => Promise<SyncAck>): Promise<void>;
+    flushQueue(send: (write: unknown) => Promise<SyncAck>): Promise<number>;
+    /** Cold-start / reconnect catch-up: reconcile a snapshot of authoritative rows.
+     *  `prune: true` treats the snapshot as the complete set (removes clean local
+     *  rows absent from it — i.e. server-side deletes). */
+    hydrate(
+      table: string,
+      rows: unknown[],
+      opts?: { prune?: boolean }
+    ): Promise<{ applied: number; ignored: number; conflicts: number; pruned: number }>;
   }
 
   export function openStore(dbName: string, tables: string[]): Promise<SyncStore>;

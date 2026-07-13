@@ -634,11 +634,8 @@ async function setupApiKeySync(): Promise<void> {
         }
       });
     }
-
-    // Cold-start catch-up: pull the authoritative snapshot over HTTP and reconcile
-    // it, so changes that landed while this client was away show up immediately
-    // (not only on the next live change). Runs now and again on each reconnect.
-    await hydrateApiKeys();
+    // The initial catch-up hydration is kicked off by the caller (bindApiKeyControls)
+    // once setup resolves; reconnects re-hydrate via the WS onStatus "open" above.
   } catch (error) {
     apiKeySync = null;
     console.debug("api_keys sync unavailable; using fetch fallback:", errorMessage(error));

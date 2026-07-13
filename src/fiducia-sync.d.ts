@@ -77,12 +77,4 @@ declare module "@fiducia/sync" {
     write: unknown,
     opts?: { pathPrefix?: string; getToken?: () => string | Promise<string | null>; idempotencyKey?: string }
   ): Promise<SyncAck>;
-  export function subscribeSupabase(opts: {
-    client: unknown;
-    tables: string[];
-    onChange: (change: SyncChange) => void;
-    channelName?: string;
-    filter?: string | Record<string, string>;
-    onStatus?: (status: string, err?: Error) => void;
-  }): { stop(): void };
 }

@@ -1,6 +1,14 @@
 # fiducia-customer-ui.web
 
-HTMX customer portal assets for `fiducia-backend.rs`.
+The customer web application for Fiducia. It owns customer sign-up/sign-in,
+account security, preferences, and customer API-key workflows. It does not
+contain operator controls; those live in the separately deployed
+`fiducia-admin.rs` application.
+
+The current production shell is rendered by the customer-facing
+`fiducia-backend.rs` service and enhanced by this Vite bundle. Sharing that
+customer BFF does not share browser state, routes, cookies, storage, or UI code
+with the admin application.
 
 The backend renders the portal shell with Axum + Maud and serves this Vite build
 from `CUSTOMER_STATIC_DIR`:
@@ -15,48 +23,40 @@ CUSTOMER_STATIC_DIR=../fiducia-customer-ui.web/dist cargo run
 `Host: app.fiducia.cloud` render the portal at `/`; the same portal is always
 available at `/app`.
 
-## Shared Interfaces
+## Customer contracts
 
-The UI imports typed contracts from the local interface package:
+The UI declares only its sanitized customer-facing response shapes and the
+local `@fiducia/sync` browser-store surface. Cluster/operator interface types are
+not dependencies of the customer bundle.
 
-```ts
-import type { LockGrant, KvGetResponse } from "@fiducia/interfaces/typescript";
-```
-
-The dependency is local in `package.json`:
-
-```json
-"@fiducia/interfaces": "file:../fiducia-interfaces"
-```
-
-## Realtime
+## Supabase Auth and refresh transport
 
 If these variables are provided to `fiducia-backend.rs`, the rendered portal
-passes them to the browser and subscribes through Supabase realtime. That is the
-browser's single Supabase WebSocket:
+passes them to the browser for Supabase login and session management:
 
 - `SUPABASE_URL`
 - `SUPABASE_ANON_KEY`
 
-The current client listens for changes on:
-
-- `public.fiducia_locks`
-- `public.fiducia_requests`
-- `public.fiducia_kv`
-- `public.fiducia_services`
-
-The browser also opens one non-sensitive heartbeat stream to
+The browser opens one non-sensitive heartbeat stream to
 `fiducia-backend.rs`:
 
 - WebSocket: `/app/ws`
 - SSE fallback: `/app/events`
 
-The backend stream carries generic refresh frames and rendered public shell
+The backend stream carries generic refresh frames and customer-shell summary
 fragments only; it never transports customer rows or API-key metadata. Customer
-records reconcile through authenticated catch-up requests or Supabase RLS.
+API-key records reconcile only through authenticated catch-up requests. The
+browser does not subscribe to Postgres changes directly: row-level security
+cannot hide server-only columns such as secret hashes, and cluster-wide locks,
+requests, KV, and service discovery belong only in the operator admin app.
 IndexedDB databases are namespaced by the authenticated Supabase user so one
 browser account cannot render another account's cached rows. The manual refresh
 button and `fiducia:refresh` HTMX event remain available as fallback paths.
+
+`fiducia-auth` is the sole API-key authority. The customer BFF verifies the
+Supabase bearer, forwards create/list/rotate operations to that service, and
+returns only the sanitized customer display contract. The browser never writes
+credential rows directly.
 
 ## Security posture
 
@@ -76,6 +76,7 @@ button and `fiducia:refresh` HTMX event remain available as fallback paths.
   customer rows or API-key metadata. All customer/API-key values render through
   `textContent`/`createElement`, never `innerHTML`.
 - **HTTP security headers** (CSP, `X-Content-Type-Options`,
-  `X-Frame-Options`/`frame-ancestors`, `Referrer-Policy`) and cookie flags
-  (`HttpOnly`/`Secure`/`SameSite` on the backend session cookie) are set by
-  `fiducia-backend.rs`; this Vite build ships no cookies of its own.
+  `X-Frame-Options`/`frame-ancestors`, `Referrer-Policy`) are set by
+  `fiducia-backend.rs`. Authentication is a Supabase browser session whose
+  access token is sent as a bearer credential to customer APIs; the customer
+  and admin applications do not share an application cookie.

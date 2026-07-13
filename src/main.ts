@@ -1,7 +1,7 @@
 // Entry point for the Fiducia customer portal browser bundle: wires Supabase auth
 // (password/passkey/2FA), the api_keys local-first sync vertical, preferences and
-// session controls, and the backend WS/SSE + Supabase realtime event streams into
-// the server-rendered HTMX shell.
+// session controls, and a non-sensitive backend WS/SSE refresh signal into the
+// server-rendered HTMX shell. Operator data never enters this application.
 import "./styles.css";
 import htmx from "htmx.org";
 import { createClient, type Session, type SupabaseClient } from "@supabase/supabase-js";
@@ -10,18 +10,9 @@ import {
   makeQueue,
   makeSyncClient,
   openStore,
-  subscribeSupabase,
-  type SyncChange,
   type SyncClient,
   type SyncStore
 } from "@fiducia/sync";
-import type {
-  ElectionGetResponse,
-  KvGetResponse,
-  LockGrant,
-  ProposeOutcome,
-  ServiceListResponse
-} from "@fiducia/interfaces/typescript";
 
 type FiduciaRegion =
   | "auto"
@@ -49,7 +40,7 @@ type CustomerApiKey = {
   scopes: string;
   last_used: string;
   status: string;
-  // Assigned by the authoritative customer Postgres row.
+  // Assigned by the authoritative fiducia-auth key record.
   id: string;
   version: number;
 };
@@ -74,9 +65,11 @@ type CreateApiKeyResponse = {
 
 type RotateApiKeyResponse = {
   ok: boolean;
+  api_key?: CustomerApiKey;
   error?: string;
   overlap_seconds?: number;
   prefix?: string;
+  replacement_secret?: string;
 };
 
 type CustomerPreferences = {
@@ -114,44 +107,7 @@ type RevokeSessionResponse = {
   status?: string;
 };
 
-type LockEvent = {
-  kind: "lock";
-  key: string;
-  tenant: string;
-  region: FiduciaRegion;
-  grant: LockGrant;
-  outcome?: ProposeOutcome;
-};
-
-type RequestEvent = {
-  kind: "request";
-  path: string;
-  method: string;
-  shard: number;
-  region: FiduciaRegion;
-  status: "committed" | "redirected" | "rejected";
-  outcome?: ProposeOutcome;
-};
-
-type KvEvent = {
-  kind: "kv";
-  key: string;
-  response: KvGetResponse;
-};
-
-type ServiceEvent = {
-  kind: "service";
-  response: ServiceListResponse;
-};
-
-type LeadershipEvent = {
-  kind: "leadership";
-  response: ElectionGetResponse;
-};
-
-type PortalEvent = LockEvent | RequestEvent | KvEvent | ServiceEvent | LeadershipEvent;
-
-type StreamFragments = Partial<Record<"summary" | "locks" | "requests" | "kv" | "services", string>>;
+type StreamFragments = Partial<Record<"summary", string>>;
 
 type BackendStreamMessage = {
   kind: "connected" | "refresh" | "pong";
@@ -187,7 +143,6 @@ const config = {
 const supabaseClient = createSupabaseCustomerClient(config);
 const statusEl = document.querySelector<HTMLElement>("[data-supabase-status]");
 const backendStatusEl = document.querySelector<HTMLElement>("[data-backend-stream-status]");
-const eventsEl = document.querySelector<HTMLElement>("#realtime-events");
 const freshnessEls = document.querySelectorAll<HTMLElement>("[data-freshness-clock]");
 const authStatusEls = document.querySelectorAll<HTMLElement>("[data-auth-status]");
 const authEmailEls = document.querySelectorAll<HTMLElement>("[data-auth-email]");
@@ -200,14 +155,9 @@ const mfaQrEl = document.querySelector<HTMLImageElement>("[data-mfa-qr]");
 const mfaSecretEl = document.querySelector<HTMLElement>("[data-mfa-secret]");
 const mfaCodeEl = document.querySelector<HTMLInputElement>("[data-mfa-code]");
 const streamTargets: Record<keyof StreamFragments, string> = {
-  summary: "#summary",
-  locks: "#locks-panel",
-  requests: "#requests-panel",
-  kv: "#kv-panel",
-  services: "#services-panel"
+  summary: "#summary"
 };
 
-let backendStreamReady = false;
 let pendingMfaFactorId: string | null = null;
 
 // The local-first api_keys sync handle. Null until (and unless) the wasm reconcile
@@ -218,14 +168,13 @@ let activeSyncUserId: string | null | undefined;
 let syncGeneration = 0;
 
 setBackendStatus("connecting");
-setRealtimeStatus(supabaseClient ? "connecting" : "offline");
+setRealtimeStatus(supabaseClient ? "configured" : "offline");
 initializeAuth(supabaseClient);
 bindApiKeyControls();
 bindPreferenceControls();
 bindSecuritySessionControls();
 startFreshnessClock();
 startBackendStream(config);
-startRealtime(supabaseClient);
 
 document.body.addEventListener("htmx:afterSwap", (event) => {
   const target = event.target;
@@ -449,6 +398,7 @@ function renderAuthSession(session: Session | null) {
   const label = signedIn ? "signed in" : "signed out";
   const email = session?.user.email ?? "No customer signed in";
   document.body.dataset.authenticated = signedIn ? "true" : "false";
+  setRealtimeStatus(signedIn ? "authenticated" : supabaseClient ? "configured" : "offline");
 
   authStatusEls.forEach((el) => {
     el.textContent = label;
@@ -616,10 +566,12 @@ function bindApiKeyControls() {
 }
 
 // Bring up the @fiducia/sync stack for api_keys: the wasm reconcile core, a
-// per-plane IndexedDB store, the sync client, and the backend WS/SSE subscription
-// that folds committed `fiducia:sync` changes into the store. Best-effort: any
-// failure (no wasm, no IndexedDB) leaves `apiKeySync` null and the view falls back
-// to the plain fetch path, so the portal degrades gracefully and never throws.
+// per-user IndexedDB store, and the sync client. Authoritative rows arrive only
+// through the authenticated customer catch-up API. We deliberately do not
+// subscribe the browser to raw api_keys CDC: RLS filters rows, not columns, and
+// the database record contains server-only fields that are not part of the
+// customer display contract. Best-effort: any failure (no wasm, no IndexedDB)
+// leaves `apiKeySync` null and the view falls back to the plain fetch path.
 async function setupApiKeySync(userId: string, generation: number): Promise<void> {
   try {
     const core = await loadBrowserCore();
@@ -632,20 +584,6 @@ async function setupApiKeySync(userId: string, generation: number): Promise<void
     const queue = makeQueue(store);
     const client = makeSyncClient({ store, queue, core });
     apiKeySync = { store, client };
-
-    // Supabase realtime is tenant-filtered by RLS and folded into the same
-    // reconcile client. The public backend heartbeat stream never carries rows.
-    // Requires the synced tables to be in the supabase_realtime publication +
-    // REPLICA IDENTITY FULL (see fiducia-interfaces sql/customer.sql).
-    if (supabaseClient) {
-      subscribeSupabase({
-        client: supabaseClient,
-        tables: ["api_keys"],
-        onChange: (change) => {
-          void applyApiKeyChanges([change]);
-        }
-      });
-    }
   } catch (error) {
     apiKeySync = null;
     console.debug("api_keys sync unavailable; using fetch fallback:", errorMessage(error));
@@ -674,31 +612,6 @@ async function fetchApiKeyCatchup(): Promise<CustomerApiKey[] | null> {
   }
 }
 
-// Fold committed changes (from the backend WS/SSE) into the local store, then
-// re-render the table from the store. Guarded so a bad frame never surfaces as a
-// page error.
-async function applyApiKeyChanges(changes: SyncChange[]) {
-  if (!apiKeySync) {
-    return;
-  }
-
-  try {
-    let touched = false;
-    for (const change of changes) {
-      if (change?.table !== "api_keys") {
-        continue;
-      }
-      await apiKeySync.client.applyChange(change);
-      touched = true;
-    }
-    if (touched) {
-      await renderApiKeysFromStore();
-    }
-  } catch (error) {
-    console.debug("applying api_keys changes failed:", errorMessage(error));
-  }
-}
-
 // Render the table straight from IndexedDB (the local-first source of truth).
 // Returns false when there is nothing stored yet, so callers can fall back.
 async function renderApiKeysFromStore(): Promise<boolean> {
@@ -724,9 +637,8 @@ async function renderApiKeysFromStore(): Promise<boolean> {
   return true;
 }
 
-// Cold-start / reconnect catch-up. Runs on initial load and on every WS reconnect
-// so changes that landed while this client was away show up immediately. Reentry
-// is guarded (the initial call can race the first WS "open").
+// Cold-start / reconnect hydration. The BFF returns a complete sanitized
+// fiducia-auth snapshot; `prune: true` removes clean local rows absent from it.
 async function hydrateApiKeys() {
   const body = apiKeyTableBody();
   if (!body || hydratingApiKeys) {
@@ -735,10 +647,7 @@ async function hydrateApiKeys() {
   hydratingApiKeys = true;
 
   try {
-    // Local-first: reconcile the authoritative snapshot from the INDEXED catch-up
-    // endpoint THROUGH the sync client. Unlike a raw store.put seed this goes via
-    // reconcile — so un-acked optimistic edits survive, and `prune: true` drops
-    // rows deleted server-side while we were away.
+    // Local-first: reconcile the authoritative snapshot through the sync client.
     if (apiKeySync) {
       const rows = await fetchApiKeyCatchup();
       if (rows) {
@@ -750,7 +659,7 @@ async function hydrateApiKeys() {
       }
     }
 
-    // If local sync is unavailable, render the same authoritative Postgres rows
+    // If local sync is unavailable, render the same authoritative auth metadata
     // directly from the list endpoint.
     const listed = await getJson<ApiKeyListResponse>("/api/customer/api-keys");
     body.textContent = "";
@@ -786,15 +695,8 @@ async function createApiKey(form: HTMLFormElement) {
     }
 
     const key = created.api_key;
-    // Creation is server-led: the create endpoint already minted the row (version 1),
-    // persisted it, and broadcast a `fiducia:sync` frame. So creation must NOT go
-    // through optimisticWrite — that would upsert + broadcast a *second* time (the
-    // create double-write). Instead, write the returned authoritative row
-    // straight into the local store as clean: the server-assigned
-    // version, not dirty, and with no durable-queue entry. Then re-render from the
-    // store. optimisticWrite stays reserved for future EDITS (rename, scope changes),
-    // where the client leads the write. If the local sync stack is unavailable,
-    // render the authoritative returned row directly.
+    // Creation is server-led by fiducia-auth. Store the returned sanitized row as
+    // clean; the browser never writes the credential table directly.
     let rendered = false;
     if (apiKeySync) {
       try {
@@ -830,14 +732,23 @@ async function rotateApiKey(prefix: string, button: HTMLButtonElement) {
       throw new Error(rotated.error ?? "api_key_rotation_failed");
     }
 
-    const row = button.closest("tr");
-    const status = row?.querySelector<HTMLElement>("[data-api-key-status]");
-    if (status) {
-      status.textContent = "rotated";
-      status.className = "tag tag--ok";
+    if (rotated.api_key && apiKeySync) {
+      await apiKeySync.store.put("api_keys", rotated.api_key.id, rotated.api_key, {
+        version: rotated.api_key.version,
+        dirty: false
+      });
+      await renderApiKeysFromStore();
+    } else if (rotated.api_key) {
+      const row = button.closest("tr");
+      row?.replaceWith(buildApiKeyRow(rotated.api_key));
     }
 
-    setApiKeyMessage(`${prefix} rotated with ${rotated.overlap_seconds ?? 900}s overlap.`);
+    const replacement = rotated.replacement_secret
+      ? ` New secret (shown once): ${rotated.replacement_secret}.`
+      : "";
+    setApiKeyMessage(
+      `${prefix} rotated with ${rotated.overlap_seconds ?? 0}s overlap.${replacement}`
+    );
   } catch (error) {
     setApiKeyMessage(errorMessage(error));
   } finally {
@@ -914,7 +825,7 @@ async function hydrateSecuritySessions() {
   try {
     const listed = await getJson<SessionListResponse>("/api/customer/security/sessions");
     body.textContent = "";
-    listed.sessions.forEach((session) => appendSecuritySessionRow(session));
+    listed.sessions.forEach((session) => appendSecuritySessionRow(session, listed.revoke_supported));
   } catch {
     // Keep the server-rendered fallback rows if the JSON endpoint is unavailable.
   }
@@ -945,7 +856,7 @@ async function revokeSecuritySession(device: string, button: HTMLButtonElement) 
   }
 }
 
-function appendSecuritySessionRow(session: CustomerSession) {
+function appendSecuritySessionRow(session: CustomerSession, revokeSupported: boolean) {
   const body = securitySessionTableBody();
   if (!body) {
     return;
@@ -957,7 +868,7 @@ function appendSecuritySessionRow(session: CustomerSession) {
     tableCell(session.location),
     tableCell(session.last_seen),
     statusCellWithHook(session.status, "sessionStatus"),
-    sessionActionCell(session)
+    sessionActionCell(session, revokeSupported)
   );
   body.append(tr);
 }
@@ -966,10 +877,14 @@ function securitySessionTableBody() {
   return document.querySelector<HTMLTableSectionElement>("[data-security-sessions-table] tbody");
 }
 
-function sessionActionCell(session: CustomerSession) {
+function sessionActionCell(session: CustomerSession, revokeSupported: boolean) {
   const cell = document.createElement("td");
   if (session.status === "verified") {
     cell.append(sessionMutedAction("Current"));
+    return cell;
+  }
+  if (!revokeSupported) {
+    cell.append(sessionMutedAction("Provider managed"));
     return cell;
   }
 
@@ -1088,6 +1003,16 @@ function appendApiKeyRow(row: CustomerApiKey, mode: "append" | "prepend" = "prep
     return;
   }
 
+  const tr = buildApiKeyRow(row);
+
+  if (mode === "append") {
+    body.append(tr);
+  } else {
+    body.prepend(tr);
+  }
+}
+
+function buildApiKeyRow(row: CustomerApiKey) {
   const tr = document.createElement("tr");
   tr.append(
     tableCell(row.name),
@@ -1095,14 +1020,9 @@ function appendApiKeyRow(row: CustomerApiKey, mode: "append" | "prepend" = "prep
     tableCell(row.scopes, "mono"),
     tableCell(row.last_used),
     statusCell(row.status),
-    apiKeyActionCell(row.prefix)
+    apiKeyActionCell(row.prefix, row.status === "active")
   );
-
-  if (mode === "append") {
-    body.append(tr);
-  } else {
-    body.prepend(tr);
-  }
+  return tr;
 }
 
 function apiKeyTableBody() {
@@ -1142,8 +1062,12 @@ function statusTagClass(status: string) {
   return "tag tag--warn";
 }
 
-function apiKeyActionCell(prefix: string) {
+function apiKeyActionCell(prefix: string, canRotate: boolean) {
   const cell = document.createElement("td");
+  if (!canRotate) {
+    cell.textContent = "—";
+    return cell;
+  }
   const button = document.createElement("button");
   button.className = "table-action";
   button.dataset.apiKeyAction = "rotate";
@@ -1155,43 +1079,6 @@ function apiKeyActionCell(prefix: string) {
   });
   cell.append(button);
   return cell;
-}
-
-function startRealtime(client: SupabaseClient | null) {
-  if (!client) {
-    return;
-  }
-
-  client
-    .channel("fiducia-customer-portal")
-    .on("postgres_changes", { event: "*", schema: "public", table: "fiducia_locks" }, (payload) => {
-      pushRealtimeEvent("Lock", payload.eventType, payload.new ?? payload.old);
-    })
-    .on("postgres_changes", { event: "*", schema: "public", table: "fiducia_requests" }, (payload) => {
-      pushRealtimeEvent("Request", payload.eventType, payload.new ?? payload.old);
-    })
-    .on("postgres_changes", { event: "*", schema: "public", table: "fiducia_kv" }, (payload) => {
-      pushRealtimeEvent("KV", payload.eventType, payload.new ?? payload.old);
-    })
-    .on("postgres_changes", { event: "*", schema: "public", table: "fiducia_services" }, (payload) => {
-      pushRealtimeEvent("Service", payload.eventType, payload.new ?? payload.old);
-    })
-    .subscribe((status) => {
-      setRealtimeStatus(status.toLowerCase());
-    });
-}
-
-function pushRealtimeEvent(topic: string, verb: string, value: unknown) {
-  setRealtimeStatus("live");
-  if (!backendStreamReady) {
-    htmx.trigger(document.body, "fiducia:refresh");
-  }
-  appendEvent({
-    topic,
-    verb,
-    at: new Date().toISOString(),
-    value: coercePortalEvent(value)
-  });
 }
 
 function startBackendStream(value: CustomerConfig) {
@@ -1207,7 +1094,6 @@ function startBackendWebSocket(value: CustomerConfig) {
   const socket = new WebSocket(resolveWebSocketUrl(value.backendWsPath));
 
   socket.addEventListener("open", () => {
-    backendStreamReady = true;
     setBackendStatus("websocket");
   });
 
@@ -1216,13 +1102,11 @@ function startBackendWebSocket(value: CustomerConfig) {
   });
 
   socket.addEventListener("close", () => {
-    backendStreamReady = false;
     setBackendStatus("reconnecting");
     window.setTimeout(() => startBackendEventSource(value), 1200);
   });
 
   socket.addEventListener("error", () => {
-    backendStreamReady = false;
     setBackendStatus("error");
     socket.close();
   });
@@ -1237,7 +1121,6 @@ function startBackendEventSource(value: CustomerConfig) {
   const source = new EventSource(resolveHttpUrl(value.backendEventsPath));
 
   source.addEventListener("open", () => {
-    backendStreamReady = true;
     setBackendStatus("sse");
   });
 
@@ -1246,7 +1129,6 @@ function startBackendEventSource(value: CustomerConfig) {
   });
 
   source.addEventListener("error", () => {
-    backendStreamReady = false;
     setBackendStatus("reconnecting");
   });
 }
@@ -1257,22 +1139,11 @@ function handleBackendStreamMessage(data: unknown, transport: BackendStreamMessa
     return;
   }
 
-  backendStreamReady = true;
   setBackendStatus(transport === "websocket" ? "websocket" : "sse");
   applyStreamFragments(parsed.fragments);
   if (parsed.kind === "refresh" && activeSyncUserId) {
     void hydrateApiKeys();
   }
-  appendEvent({
-    topic: "Backend Stream",
-    verb: parsed.kind,
-    at: new Date(parsed.at_ms).toISOString(),
-    value: {
-      sequence: parsed.sequence,
-      transport: parsed.transport,
-      fragments: Object.keys(parsed.fragments ?? {})
-    }
-  });
 }
 
 function parseBackendMessage(data: unknown): BackendStreamMessage | null {
@@ -1308,57 +1179,6 @@ function applyStreamFragments(fragments: StreamFragments | undefined) {
     target.dataset.lastSwapAt = new Date().toISOString();
     htmx.process(target);
   }
-}
-
-function appendEvent(event: { topic: string; verb: string; at: string; value: unknown }) {
-  if (!eventsEl) {
-    return;
-  }
-
-  const item = document.createElement("article");
-  item.className = "event-item";
-
-  const meta = document.createElement("div");
-  meta.className = "event-item__meta";
-  meta.textContent = `${event.topic} ${event.verb} - ${formatClock(event.at)}`;
-
-  const body = document.createElement("pre");
-  body.textContent = JSON.stringify(event.value, null, 2);
-
-  item.append(meta, body);
-  eventsEl.prepend(item);
-
-  while (eventsEl.children.length > 18) {
-    eventsEl.lastElementChild?.remove();
-  }
-}
-
-function coercePortalEvent(value: unknown): PortalEvent | unknown {
-  if (!isRecord(value)) {
-    return value;
-  }
-
-  if (value.kind === "lock" && typeof value.key === "string") {
-    return value as LockEvent;
-  }
-
-  if (value.kind === "request" && typeof value.path === "string") {
-    return value as RequestEvent;
-  }
-
-  if (value.kind === "kv" && typeof value.key === "string") {
-    return value as KvEvent;
-  }
-
-  if (value.kind === "service") {
-    return value as ServiceEvent;
-  }
-
-  if (value.kind === "leadership") {
-    return value as LeadershipEvent;
-  }
-
-  return value;
 }
 
 function readFormString(data: FormData, key: string, trim = true) {
@@ -1474,14 +1294,6 @@ function startFreshnessClock() {
 
   tick();
   window.setInterval(tick, 1000);
-}
-
-function formatClock(iso: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit"
-  }).format(new Date(iso));
 }
 
 function resolveHttpUrl(path: string) {

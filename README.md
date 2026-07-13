@@ -31,7 +31,7 @@ JavaScript, runtime config, browser auth, or build artifacts.
 For archival verification only:
 
 ```sh
-npm ci
+npm ci --ignore-scripts
 npm run check
 npm run test:browser
 npm run build

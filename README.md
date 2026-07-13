@@ -42,8 +42,9 @@ CI resolves the sole sibling test dependency, `fiducia-test-config`, at commit
 client with the backend, operator app, sync service, interfaces repository, or
 marketing site. Dependency installation is lockfile-only with lifecycle scripts
 disabled, and the optional archival container serves on port 8080 as an
-unprivileged nginx user. That image is verification evidence, not a supported
-deployment artifact.
+unprivileged nginx user. Its Node and nginx base manifests are pinned by digest;
+weekly Docker Dependabot updates keep those immutable inputs reviewable. That
+image is verification evidence, not a supported deployment artifact.
 
 The preserved SPA contains customer-only contracts, same-origin executable-code
 checks, per-user/per-org browser storage isolation, CSP-oriented static hosting,

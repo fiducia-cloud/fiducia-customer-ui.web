@@ -13,4 +13,5 @@ two gating jobs:
   sync service, interfaces repo, or marketing site, and a regression fails CI.
 
 Every third-party action is pinned by commit. The archived SPA is intentionally
-kept outside the production customer/admin authorization boundary.
+kept outside the production customer/admin authorization boundary. CI uses the
+exact Node 22.17.0 toolchain; the Dockerfile pins both base manifests by digest.

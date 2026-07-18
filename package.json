@@ -9,8 +9,9 @@
     "check": "tsc --noEmit",
     "preview": "vite preview --host 127.0.0.1",
     "test:browser": "npm run build && node --test --test-concurrency=1 tests/*.test.mjs",
-    "test:browser:playwright": "npm run build && node --test tests/customer-playwright.test.mjs",
-    "test:browser:puppeteer": "npm run build && node --test tests/customer-puppeteer.test.mjs"
+    "test:browser:playwright": "npm run build && node --test --test-concurrency=1 tests/*-playwright.test.mjs tests/customer-standalone.test.mjs",
+    "test:browser:puppeteer": "npm run build && node --test --test-concurrency=1 tests/*-puppeteer.test.mjs",
+    "test:guard": "node --test tests/customer-config-guard.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.89.0",

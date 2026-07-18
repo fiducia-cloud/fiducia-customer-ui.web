@@ -36,6 +36,9 @@ jobs:
         working-directory: fiducia-customer-ui.web
       - run: npm run build
         working-directory: fiducia-customer-ui.web
+      - name: config secret guard (no credentials in public config.js)
+        run: npm run test:guard
+        working-directory: fiducia-customer-ui.web
 
   # The archived image is verification evidence, not a deployment artifact.
   # Build it from an isolated checkout so that contract cannot silently rot.
@@ -49,10 +52,18 @@ jobs:
 
   # Full-browser regression checks for the preserved standalone shell. The
   # fixture exposes only the sanitized customer BFF contract and carries no
-  # production identity or credential authority.
+  # production identity or credential authority. Playwright and Puppeteer run as
+  # independent lanes (both under node --test) so a single Chrome build verifies
+  # the portal through two engines — a regression that only one driver observes
+  # still fails CI.
   browser-e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [playwright, puppeteer]
+    name: browser-e2e (${{ matrix.engine }})
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -70,8 +81,8 @@ jobs:
       - name: Install locked dependencies without lifecycle scripts
         run: npm ci --ignore-scripts
         working-directory: fiducia-customer-ui.web
-      - name: browser tests
+      - name: browser tests (${{ matrix.engine }})
         working-directory: fiducia-customer-ui.web
         env:
           CHROME_BIN: ${{ steps.chrome.outputs.chrome-path }}
-        run: npm run test:browser
+        run: npm run test:browser:${{ matrix.engine }}

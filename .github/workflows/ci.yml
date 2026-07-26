@@ -11,6 +11,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Typecheck + production build. The only sibling dependency is the locked
   # browser/server harness exposed by @fiducia/test-config.
@@ -20,9 +24,11 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
+          persist-credentials: false
           path: fiducia-customer-ui.web
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
+          persist-credentials: false
           repository: fiducia-cloud/fiducia-test-config
           ref: 825220281fdc16bbf47a035177001d2fe29bdabf
           path: fiducia-test-config
@@ -31,6 +37,8 @@ jobs:
           node-version: "22.17.0"
       - name: Install locked dependencies without lifecycle scripts
         run: npm ci --ignore-scripts
+        working-directory: fiducia-customer-ui.web
+      - run: npm audit --audit-level=high
         working-directory: fiducia-customer-ui.web
       - run: npm run check
         working-directory: fiducia-customer-ui.web
@@ -47,6 +55,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
       - name: build archived customer image
         run: docker build --tag fiducia-customer-ui:ci .
 
@@ -67,9 +77,11 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
+          persist-credentials: false
           path: fiducia-customer-ui.web
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
+          persist-credentials: false
           repository: fiducia-cloud/fiducia-test-config
           ref: 825220281fdc16bbf47a035177001d2fe29bdabf
           path: fiducia-test-config
